@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AzureDeploymentTool, environmentInstructions, safeCandidate, safePlan, type Account, type AzureRunner, type Plan } from "../deploy/azure.ts";
+import { AzureDeploymentTool, safeCandidate, safePlan, type Account, type Plan } from "../deploy/azure.ts";
+import type { AzureRunner } from "../src/azure-cli.ts";
 import { assertReusable, eligibleModels, selectDeployment, selectModel, type CatalogModel, type Deployment, type Usage } from "../deploy/policy.ts";
 
 const model: CatalogModel = {
@@ -95,9 +96,8 @@ test("discovery requires an unambiguous eligible existing account", async () => 
   assert.equal((await tool.plan({ location: "eastus2", deployment: "fixture-deployment", capacity: 1 })).account.location, "eastus2");
 });
 
-test("default summaries never expose identifiers; endpoint exports are an explicit separate operation", () => {
+test("deployment summaries do not expose personal resource identifiers", () => {
   const candidate = { account, models: [model], usages, deployments: [], selection };
   const summary = JSON.stringify([safeCandidate(candidate, 0), safePlan(plan)]);
   for (const sensitive of [account.name, account.resourceGroup, plan.subscription, account.properties!.endpoint!, deployment.name]) assert.equal(summary.includes(sensitive), false);
-  assert.throws(() => environmentInstructions({ ...plan, account: { ...account, properties: { endpoint: "https://user:password@example.invalid/" } } }), /unexpected/);
 });

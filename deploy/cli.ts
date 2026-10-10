@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { AzureDeploymentTool, environmentInstructions, safeCandidate, safePlan, type DeployOptions } from "./azure.ts";
+import { AzureDeploymentTool, safeCandidate, safePlan, type DeployOptions } from "./azure.ts";
 
 const HELP = `Usage: npm run deploy -- <list|plan|apply> [options]
   --account NAME           Existing AIServices account (never creates accounts)
@@ -11,7 +11,6 @@ const HELP = `Usage: npm run deploy -- <list|plan|apply> [options]
   --sku NAME               Optional live supported SKU; prefers DataZoneStandard
   --capacity NUMBER        Default: 1; requires supported capacity and confirmed quota
   --show-identifiers       list only: reveal account/group names in a private terminal
-  --print-env              plan/apply only: print real endpoint exports in a private terminal
   --help                   Show this help
 
 Default output excludes account, group, subscription, endpoint and deployment names.
@@ -30,12 +29,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     account: { type: "string" }, "resource-group": { type: "string" }, subscription: { type: "string" },
     location: { type: "string" },
     deployment: { type: "string", default: "omp-decision-1" }, sku: { type: "string" }, capacity: { type: "string", default: "1" },
-    "print-env": { type: "boolean", default: false }, "show-identifiers": { type: "boolean", default: false }, help: { type: "boolean", default: false },
+    "show-identifiers": { type: "boolean", default: false }, help: { type: "boolean", default: false },
   } });
   if (values.help) { process.stdout.write(HELP); return; }
   const command = positionals[0];
   if (positionals.length !== 1 || !["list", "plan", "apply"].includes(command ?? "")) throw new Error("Specify exactly one command: list, plan or apply. Use --help for options.");
-  if (values["print-env"] && command === "list") throw new Error("--print-env requires plan or apply.");
   if (values["show-identifiers"] && command !== "list") throw new Error("--show-identifiers is supported only by list.");
   for (const value of [values.account, values["resource-group"], values.subscription, values.location, values.deployment, values.sku]) {
     if (value !== undefined && (!value.trim() || value.startsWith("-") || /[\r\n\0]/u.test(value))) throw new Error("Option values must be nonempty and must not contain control characters or start with a dash.");
@@ -56,7 +54,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const result = await tool.apply(plan);
     console.log(JSON.stringify({ ...safePlan(plan), result }, null, 2));
   } else console.log(JSON.stringify(safePlan(plan), null, 2));
-  if (values["print-env"]) process.stdout.write(environmentInstructions(plan));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

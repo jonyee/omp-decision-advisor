@@ -3,54 +3,100 @@ import type { DecisionOptions } from "./types.js";
 export const MIN_PASS_THRESHOLD = 0.5;
 export const MIN_TIMEOUT_MS = 100;
 export const MAX_TIMEOUT_MS = 120_000;
+export const MAX_HOST_TIMEOUT_MS = 20_000;
 
-/** HTTP is accepted only with explicitly injected test credentials on literal loopback. */
-export function validateDecisionOptions(options: DecisionOptions, allowTestLoopback = false): DecisionOptions {
+export interface DecisionSettings extends DecisionOptions {
+  reviewModel: string;
+  advisorTimeoutMs: number;
+}
+
+function validateEndpoint(value: string, allowTestLoopback = false): string {
   let endpoint: URL;
   try {
-    endpoint = new URL(options.endpoint);
+    endpoint = new URL(value);
   } catch {
-    throw new Error("DECISION_ENDPOINT must be an absolute HTTPS URL.");
+    throw new Error("Scoring endpoint must be an absolute HTTPS URL.");
   }
   const loopback = endpoint.hostname === "127.0.0.1" || endpoint.hostname === "[::1]";
   if (endpoint.protocol !== "https:" && !(allowTestLoopback && loopback && endpoint.protocol === "http:")) {
-    throw new Error("DECISION_ENDPOINT must use HTTPS; HTTP is permitted only for isolated loopback tests.");
+    throw new Error("Scoring endpoint must use HTTPS; HTTP is permitted only for isolated loopback tests.");
   }
   if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") {
-    throw new Error("DECISION_ENDPOINT must be the account HTTPS origin, without credentials, paths, query or fragment.");
+    throw new Error("Scoring endpoint must be the account HTTPS origin, without credentials, paths, query or fragment.");
   }
-  if (typeof options.deployment !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(options.deployment)) {
-    throw new Error("DECISION_DEPLOYMENT must be a deployment name of 1–128 letters, digits, dots, underscores or hyphens.");
-  }
-  if (!Number.isFinite(options.passThreshold) || options.passThreshold < MIN_PASS_THRESHOLD || options.passThreshold > 1) {
-    throw new Error("DECISION_PASS_THRESHOLD must be a finite number between 0.5 and 1.");
-  }
-  if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < MIN_TIMEOUT_MS || options.timeoutMs > MAX_TIMEOUT_MS) {
-    throw new Error("DECISION_TIMEOUT_MS must be an integer between 100 and 120000.");
-  }
-  return { ...options, endpoint: endpoint.origin };
+  return endpoint.origin;
 }
 
-function numericEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
-  const value = env[name];
-  if (value === undefined) return fallback;
-  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value)) {
-    throw new Error(`${name} must be an unsigned decimal number.`);
+function validateDeployment(value: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+    throw new Error("Scoring deployment must be a name of 1–128 letters, digits, dots, underscores or hyphens.");
   }
-  return Number(value);
 }
 
-export function readDecisionOptions(env: NodeJS.ProcessEnv = process.env): DecisionOptions {
-  if (env.DECISION_API_KEY !== undefined) {
-    throw new Error("DECISION_API_KEY is unsupported by the verified System One contract. Remove it and use Azure identity (for example az login).");
+function validateThreshold(value: number): void {
+  if (!Number.isFinite(value) || value < MIN_PASS_THRESHOLD || value > 1) {
+    throw new Error("Pass threshold must be a finite number between 0.5 and 1.");
   }
-  if (!env.DECISION_ENDPOINT || !env.DECISION_DEPLOYMENT) {
-    throw new Error("Set DECISION_ENDPOINT and DECISION_DEPLOYMENT before enabling Azure decision scoring.");
+}
+
+function validateTimeout(value: number, maximum: number, label: string): void {
+  if (!Number.isInteger(value) || value < MIN_TIMEOUT_MS || value > maximum) {
+    throw new Error(`${label} must be an integer between ${MIN_TIMEOUT_MS} and ${maximum} milliseconds.`);
   }
-  return validateDecisionOptions({
-    endpoint: env.DECISION_ENDPOINT,
-    deployment: env.DECISION_DEPLOYMENT,
-    passThreshold: numericEnv(env, "DECISION_PASS_THRESHOLD", 0.8),
-    timeoutMs: numericEnv(env, "DECISION_TIMEOUT_MS", 10_000),
-  });
+}
+
+function validateCredentialMode(value: unknown): asserts value is DecisionOptions["credentialMode"] {
+  if (value !== "azure-cli" && value !== "default") {
+    throw new Error("Azure credential mode must be azure-cli or default.");
+  }
+}
+
+/** HTTP is accepted only with explicitly injected test credentials on literal loopback. */
+export function validateDecisionOptions(options: DecisionOptions, allowTestLoopback = false): DecisionOptions {
+  if (typeof options.endpoint !== "string" || !options.endpoint || typeof options.deployment !== "string" || !options.deployment) {
+    throw new Error("Configure a scoring endpoint and deployment with /decision before enabling Azure decision scoring.");
+  }
+  const endpoint = validateEndpoint(options.endpoint, allowTestLoopback);
+  validateDeployment(options.deployment);
+  validateThreshold(options.passThreshold);
+  validateTimeout(options.timeoutMs, MAX_TIMEOUT_MS, "Scoring timeout");
+  validateCredentialMode(options.credentialMode);
+  return { endpoint, deployment: options.deployment, passThreshold: options.passThreshold, timeoutMs: options.timeoutMs, credentialMode: options.credentialMode };
+}
+
+function stringSetting(raw: Record<string, unknown>, key: string, fallback: string): string {
+  const value = raw[key] === undefined ? fallback : raw[key];
+  if (typeof value !== "string") throw new Error(`${key} must be a string.`);
+  return value.trim();
+}
+
+function numberSetting(raw: Record<string, unknown>, key: string, fallback: number): number {
+  const value = raw[key] === undefined ? fallback : raw[key];
+  if (typeof value !== "number") throw new Error(`${key} must be a number.`);
+  return value;
+}
+
+/** Normalize persisted preferences without requiring an already configured Azure provider. */
+export function normalizeDecisionSettings(raw: Record<string, unknown>): DecisionSettings {
+  const endpointValue = stringSetting(raw, "endpoint", "");
+  const deployment = stringSetting(raw, "deployment", "");
+  const reviewModel = stringSetting(raw, "reviewModel", "@advisor");
+  const credentialMode = raw.credentialMode === undefined ? "azure-cli" : raw.credentialMode;
+  const passThreshold = numberSetting(raw, "passThreshold", 0.8);
+  const timeoutMs = numberSetting(raw, "timeoutMs", 10_000);
+  const advisorTimeoutMs = numberSetting(raw, "advisorTimeoutMs", 20_000);
+  const endpoint = endpointValue ? validateEndpoint(endpointValue) : "";
+  if (deployment) validateDeployment(deployment);
+  if (!reviewModel || /[\u0000-\u001f\u007f]/.test(reviewModel)) {
+    throw new Error("Advisor model must be a nonblank OMP model selector or role, without control characters.");
+  }
+  validateCredentialMode(credentialMode);
+  validateThreshold(passThreshold);
+  validateTimeout(timeoutMs, MAX_HOST_TIMEOUT_MS, "Scoring timeout");
+  validateTimeout(advisorTimeoutMs, MAX_HOST_TIMEOUT_MS, "Automatic advisor timeout");
+  return { endpoint, deployment, reviewModel, credentialMode, passThreshold, timeoutMs, advisorTimeoutMs };
+}
+
+export function toDecisionOptions(settings: DecisionSettings): DecisionOptions {
+  return validateDecisionOptions(normalizeDecisionSettings({ ...settings }));
 }

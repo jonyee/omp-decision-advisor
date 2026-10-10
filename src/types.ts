@@ -37,4 +37,5 @@ export interface DecisionOptions {
   deployment: string;
   passThreshold: number;
   timeoutMs: number;
+  credentialMode: "azure-cli" | "default";
 }

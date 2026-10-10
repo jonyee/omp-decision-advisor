@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
-import { readDecisionOptions } from "../src/config.js";
+import { validateDecisionOptions } from "../src/config.js";
 import { AzureDecisionClient, COGNITIVE_SCOPE, DecisionError, MAX_EVIDENCE_BYTES } from "../src/decision.js";
 import { criterionIds, type DecisionOptions, type TurnEvidence, type Verdict } from "../src/types.js";
 
@@ -12,7 +12,7 @@ const evidence: TurnEvidence = {
   assistant: { content: "4", final: true },
   toolResults: [],
 };
-const defaults: DecisionOptions = { endpoint: "https://example.invalid", deployment: "test-decision", passThreshold: 0.8, timeoutMs: 1_000 };
+const defaults: DecisionOptions = { endpoint: "https://example.invalid", deployment: "test-decision", passThreshold: 0.8, timeoutMs: 1_000, credentialMode: "azure-cli" };
 const credential = { getToken: async () => ({ token: "isolated-test-token" }) };
 function answer(choice: Verdict = "pass", probability = 0.97) {
   return {
@@ -200,18 +200,19 @@ test("oversized and unserializable evidence is rejected before auth, never trunc
   assert.equal(calls, 0);
 });
 
-test("configuration defaults and strict numeric bounds", () => {
-  const env = { DECISION_ENDPOINT: "https://example.invalid/", DECISION_DEPLOYMENT: "test-decision" };
-  assert.deepEqual(readDecisionOptions(env), { ...defaults, timeoutMs: 10_000 });
-  assert.equal(readDecisionOptions({ ...env, DECISION_PASS_THRESHOLD: ".5", DECISION_TIMEOUT_MS: "100" }).passThreshold, 0.5);
-  for (const value of ["", "NaN", "Infinity", "0.49", "1.01", " 0.8 ", "0.8junk", "0x1", "1e0"]) {
-    assert.throws(() => readDecisionOptions({ ...env, DECISION_PASS_THRESHOLD: value }));
+test("standalone scoring options enforce numeric bounds without persisted host deadlines", () => {
+  for (const passThreshold of [0.5, 1]) {
+    assert.equal(validateDecisionOptions({ ...defaults, passThreshold }).passThreshold, passThreshold);
   }
-  for (const value of ["", "99", "120001", "100.5", "Infinity", "1e4", "10ms"]) {
-    assert.throws(() => readDecisionOptions({ ...env, DECISION_TIMEOUT_MS: value }));
+  for (const passThreshold of [NaN, Infinity, 0.49, 1.01]) {
+    assert.throws(() => validateDecisionOptions({ ...defaults, passThreshold }));
   }
-  assert.throws(() => readDecisionOptions({ ...env, DECISION_API_KEY: "isolated-test-key" }), /unsupported/);
-  assert.throws(() => readDecisionOptions({}));
+  for (const timeoutMs of [100, 120_000]) {
+    assert.equal(validateDecisionOptions({ ...defaults, timeoutMs }).timeoutMs, timeoutMs);
+  }
+  for (const timeoutMs of [99, 120_001, 100.5, Infinity]) {
+    assert.throws(() => validateDecisionOptions({ ...defaults, timeoutMs }));
+  }
 });
 
 test("unsafe endpoints and malformed deployment names are rejected before credentials", () => {

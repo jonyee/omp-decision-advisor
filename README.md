@@ -1,27 +1,22 @@
 # OMP Decision advisor
 
-Microsoft-Decision-1 on Azure Foundry scores every completed **primary model turn**, including tool-loop turns. It returns fixed-choice probabilities, not explanations. `/decision review` starts a separate larger OMP model with read-only `read`, `grep`, and `glob` tools when you want an investigation.
+Microsoft-Decision-1 on Azure Foundry reviews every completed **primary model turn**, including tool-loop turns. Passing turns are silent. A failed triage check automatically starts the configured OMP advisor model; only failures and their advisor review are displayed.
 
-The extension and Azure deployment tooling live in this repository. No changes to the Nix configuration are required.
+The extension and Azure deployment tooling share this repository. No Nix configuration changes are required.
 
-## Install as an OMP extension
+## Install
 
-The package declares `omp.extensions`; OMP discovers it automatically after installation. The archive contains only `src/`, `package.json` and this README. Azure Identity is the only external runtime dependency. OMP supplies its SDK and native tokenizer; optional peers pin the supported host to **18.8.7** without installing another OMP runtime.
-
-Install directly from this GitHub repository:
+Requires OMP **18.8.7**. Its Git installer needs external Bun on `PATH`:
 
 ```sh
 omp install github:jonyee/omp-decision-advisor
 ```
 
-OMP's Git installer invokes external `bun install`, so Bun must be on `PATH` even when OMP itself is a standalone binary. On Nix, install without changing the host configuration:
+On Nix, without changing host configuration:
 
 ```sh
 nix shell nixpkgs#bun --command omp install github:jonyee/omp-decision-advisor
 ```
-
-The installer enables the extension automatically. Start a new OMP session with the runtime Azure settings described below; installing the extension does not configure credentials or deploy Azure resources. A direct GitHub installation was verified in an isolated OMP home with live Azure scoring.
-
 
 For a local checkout:
 
@@ -30,86 +25,91 @@ npm ci --ignore-scripts
 omp install /path/to/omp-decision-advisor
 ```
 
-This links the checkout into your user OMP plugins. Start a new OMP session after installation. Uninstall with `omp plugin uninstall omp-decision-advisor`.
+Restart OMP after installation. Uninstall with `omp plugin uninstall omp-decision-advisor`.
 
-For an archive, build it in the checkout with `npm pack --ignore-scripts`. Install the resulting `.tgz` into a dedicated directory, then register the installed package:
+The extension archive ships `src/`, `package.json` and this README. Azure Identity is its only external runtime dependency; the host supplies the SDK and tokenizer. Optional peers pin the supported OMP version without installing another OMP runtime. Native TypeScript loading needs no extension build step. `private: true` prevents npm-registry publication; GitHub installation still works. No redistribution license has been selected.
+
+For an archive, run `npm pack --ignore-scripts` in the checkout, then:
 
 ```sh
 npm install --ignore-scripts --omit=dev \
   --prefix "$HOME/.local/share/omp-decision-extensions" \
-  /path/to/omp-decision-advisor-0.1.0.tgz
+  /path/to/omp-decision-advisor-0.2.0.tgz
 omp install "$HOME/.local/share/omp-decision-extensions/node_modules/omp-decision-advisor"
 ```
 
-OMP 18.8.7 treats local install targets as directories to link, not tarballs. Do not pass the `.tgz` directly to `omp install`. Native TypeScript loading means no extension build step is required. `private: true` prevents npm-registry publication; the GitHub repository remains installable. No redistribution license has been selected.
+OMP treats local install targets as directories to link, not tarballs: install the archive with npm first.
 
-Configure `DECISION_ENDPOINT` and `DECISION_DEPLOYMENT` in your runtime environment before launching ordinary `omp`. Use `az login` and `AZURE_TOKEN_CREDENTIALS=AzureCliCredential` for local Azure CLI authentication. The repository's `npm run deploy -- plan --location eastus2 --sku DataZoneStandard --capacity 17 --print-env` prints the two account exports explicitly in a private terminal; copy only the `export` lines. Never commit the endpoint or credentials.
+## Configure in OMP
 
-## Run from the checkout
+Run `/decision` to open the native settings UI. Use arrows and Enter to edit:
 
-The discovery launcher and Azure deployment tooling are repository-only utilities, intentionally excluded from the extension archive. Requires Node 22+, npm, OMP **18.8.7**, Azure CLI, and an existing Foundry `AIServices` account. Native tokenizer binaries support Linux, macOS and Windows on supported architectures. Keep the OMP host version aligned with the pinned packages.
+| Preference | Purpose |
+|---|---|
+| Scoring model | Choose a healthy existing Microsoft-Decision-1 Azure deployment, or enter its endpoint and deployment manually |
+| Advisor model | Choose an authenticated OMP chat model, an explicit selector, or OMP's `@advisor` role |
+| Azure credentials | Azure CLI identity (`az login`, recommended locally), or `DefaultAzureCredential` |
+| Pass threshold | Start at `0.8`; allowed `0.5`–`1`; lower means fewer escalations, higher is stricter |
+| Scoring timeout | Authentication and inference deadline; initially 10000 ms, allowed 100–20000 ms |
+| Automatic advisor timeout | Review deadline; initially 20000 ms, allowed 100–20000 ms |
+
+**Save** persists the draft in OMP's existing plugin settings store, then applies it immediately to the running extension. **Cancel** makes no changes. Changing settings cancels outstanding old-configuration work and clears the old latest-turn report.
+
+Preferences live under `settings["omp-decision-advisor"]` in the active profile's `omp-plugins.lock.json`; the default layout is `~/.omp/plugins/omp-plugins.lock.json`. Named profiles and initialized XDG layouts use OMP's normal paths. Project plugin overrides retain OMP's normal precedence; the UI warns if they shadow a saved profile value and reloads the effective values.
+
+No custom `DECISION_*` environment variables are read. Old shell exports can be removed. Endpoints and model choices stay in local OMP configuration, not this public repository. Tokens, API keys and passwords are never saved. API-key authentication is not supported by the verified System One contract.
+
+Deployment discovery is read-only and happens only when selected in the UI. It uses Azure CLI's active subscription and account read permissions. It never creates or changes Azure resources. Without discovery access, enter the existing account HTTPS origin and deployment manually. Do not append `/providers/microsoft/v1/systemone` to the endpoint; the client adds it.
+
+Azure CLI mode uses your existing `az login` identity without an extra credential-selection variable. DefaultAzureCredential mode supports Azure SDK's standard managed/workload/environment identity mechanisms. Inference still requires existing data-plane permissions and network access. The extension never grants roles or changes authentication/network policies.
+
+Commands:
+
+- `/decision` or `/decision configure` — edit saved preferences.
+- `/decision status` — explicitly show the latest stored scores, even when the turn passed.
+- `/decision review` — show/reuse the automatically requested review, or explicitly review a passing turn. It does not issue a duplicate review for the same captured turn.
+
+For headless administration, use OMP's existing plugin configuration CLI:
+
+```sh
+omp plugin config set omp-decision-advisor passThreshold 0.8
+omp plugin config set omp-decision-advisor reviewModel @advisor
+omp --profile work plugin config list omp-decision-advisor --json
+```
+
+Configuration listings can expose your local account endpoint; use a private terminal. Use the same profile and project directory as the OMP session. The next session reads external CLI changes; `/decision` applies its own Save immediately.
+
+## Failure policy and request count
+
+All five independent rubric questions—adherence, groundedness, correctness, safety and progress—are batched into **one Decision-1 request per primary turn**. There are not five separate model requests. A user request may involve several tool-loop turns, each with its own review.
+
+A turn fails triage if **any** criterion has a non-`pass` verdict (`concern`, `blocker` or `cannot_tell`), or its `P(pass)` falls below the configured threshold. Equality passes: `P(pass) == threshold` is sufficient when the verdict is `pass`.
+
+`0.8` is a conservative starting triage threshold, not a calibrated guarantee. Try `0.7` if representative examples show too many low-confidence false alarms; increasing the threshold is stricter. Explicit non-pass verdicts still escalate regardless of the threshold. Missing evidence is uncertainty, not proof of a defect.
+
+Passing scores are retained in ordinary OMP session entries but produce no automatic table, notification or JSON feedback. A failure displays its scores and automatically invokes the selected advisor with the actual turn evidence. Scoring/authentication/network/context-size failures display **not evaluated** and also invoke the advisor without a score; they never become a fabricated pass. Advisor failure or timeout is visible and applies no findings.
+
+The advisor may accept a flagged turn: that means the first-stage flag was not confirmed. Advisor findings are displayed and queued as advisory context for the primary's next natural turn. The extension does not automatically restart the primary, approve an action or change its model. The advisor has only `read`, `grep` and `glob`; no extensions, MCP, IRC or mutating tools. Fresh reviewer tool results remain secret-obfuscated. Read-only tools are not a filesystem sandbox.
+
+An advisor review requires a separate model invocation because it depends on Decision-1's result and uses a different model. Investigation can require further advisor model calls after tool results. Passing turns have no advisor calls. The current endpoint allowance reported by the owner is **17 requests/second**; count one Decision-1 request per primary turn, not one per criterion. The extension does not alter capacity or quota.
+
+Both scoring and automatic review are bounded below OMP's 30-second hook budget. Separate finalization gates wait for outstanding scoring and advisor work, including in print/JSON mode. Failed-turn reviews can overlap without replacing the latest turn's state. Session changes cancel stale work. Feedback cards are excluded from primary/judge input; advisor findings enter separately, avoiding self-review loops.
+
+Review is post-turn and cannot prevent a tool action that already happened. Evidence includes standing instructions, the latest user request, up to eight recent messages, and the current assistant/tool results. OMP's Qwen tokenizer limits evidence to 24000 tokens, reserving space within the model's 32768-token context for rubrics. The standalone client uses a stricter 28000-byte budget without a host tokenizer. Oversized evidence is rejected rather than silently truncated. Attachments are explicitly unavailable to this text-only judge.
+
+## Checkout utilities and Azure deployment
+
+The launcher, probe and deployment tooling are repository-only utilities, excluded from the extension archive. Requires Node 22+, npm and Azure CLI for cloud operations.
 
 ```sh
 npm ci --ignore-scripts
-az login
-npm run omp
-```
-
-The launcher discovers the existing `omp-decision-1` deployment in **East US 2**, `DataZoneStandard`, capacity **17**, without printing the account endpoint or writing it into the repository. It does not deploy or change anything. It selects `AzureCliCredential` for this local workflow unless `AZURE_TOKEN_CREDENTIALS` is already configured.
-
-Pass normal OMP options after `--`:
-
-```sh
 npm run omp -- --cwd /path/to/workspace
-npm run omp -- --cwd /path/to/workspace --model github-copilot/gpt-6-sol
+npm run omp -- --profile work --cwd /path/to/workspace
 ```
 
-Within OMP:
+The development launcher explicitly loads this local extension and suppresses ambient extension discovery so an installed copy cannot run a duplicate review. Explicit additional `-e` paths still work. Use ordinary `omp` for your normal installed extension roster. `/decision` configures the selected profile; the launcher does not guess an Azure resource or read custom runtime variables.
 
-- `/decision` — show the latest report.
-- `/decision review` — investigate the latest captured turn with `DECISION_REVIEW_MODEL`, or the configured OMP `slow` role (`@slow`) when unset.
-
-No automatic bigger-model calls. Review requests use the existing OMP provider credentials; they do not switch the primary model or deploy another Azure model. Reviews run in memory, with extensions, MCP, IRC and mutating tools disabled. Configured/built-in secret obfuscation remains enabled for fresh reviewer tool results. A review can read workspace files; read-only is not a filesystem sandbox.
-
-Findings are shown to the user and queued as advisory context for the next primary turn. They never automatically resume the primary or approve an action. Continue the primary when you want it to act. Switching/branching/compacting the session cancels outstanding work and clears the latest report; `/decision review` targets the current session only.
-
-## Feedback contract
-
-Five independent criteria: instruction adherence, groundedness, correctness, safety and progress. Each returns `pass`, `concern`, `blocker` or `cannot_tell`, all four probabilities and confidence. A criterion is flagged unless its choice is `pass` **and** `P(pass)` meets the threshold.
-
-Feedback appears during the run in the TUI widget, or via RPC notifications. Print/JSON mode emits `decision_feedback` JSON records. Reports and completed review results are stored as custom entries in the ordinary OMP session; ephemeral `--no-session` runs do not persist them. `/decision` renders a report card. Feedback cards are excluded from future judge input and primary-provider context to prevent self-review loops; actionable larger-model findings enter primary context separately.
-OMP can emit tool-loop turn observers concurrently. Each turn retains its own result; the final feedback card waits for all bounded scoring jobs and orders reports by turn number. Completion of an older score never replaces the latest turn selected by `/decision review`.
-Headless final completion also waits for scores registered at assistant finalization, before delayed `turn_end` observers arrive. Print/JSON output does not queue a display card during shutdown, avoiding hidden primary continuations.
-
-
-
-The evidence includes standing primary instructions, the latest user request, up to eight recent user/assistant/tool-result messages, the current assistant turn and its tool results. The Qwen 3.5 tokenizer budgets evidence to **24,000 tokens**, leaving room within the model's 32,768-token window for rubric/API overhead. The standalone Node client uses a stricter **28,000-byte** evidence budget when no host tokenizer is supplied. Large current evidence is rejected, not silently truncated. Attachments become explicit unavailable-evidence markers; this model is text-only.
-
-Scoring is advisory and post-turn: it cannot prevent a tool action that already executed. Unsupported/malformed responses, oversized evidence, cancellation, throttling, timeout and authentication failures produce **not evaluated**, never a fabricated pass. Host scoring is bounded to 20 seconds (also subject to the configured, normally shorter timeout). The primary is not blocked indefinitely. A larger review has a 120-second deadline. Probabilities/thresholds require calibration on your own tasks; a pass is not proof of correctness.
-
-## Runtime configuration
-
-Do not put actual credentials or resource endpoints in committed files or Nix expressions.
-
-| Variable | Meaning |
-|---|---|
-| `DECISION_ENDPOINT` | Existing Foundry account HTTPS origin; bypass launcher discovery when set |
-| `DECISION_DEPLOYMENT` | Deployment identifier; launcher default `omp-decision-1` |
-| `DECISION_LOCATION` | Launcher discovery region; default `eastus2` |
-| `DECISION_ACCOUNT`, `DECISION_RESOURCE_GROUP`, `DECISION_SUBSCRIPTION` | Optional private runtime account selection |
-| `DECISION_CAPACITY` | Expected existing deployment capacity; launcher default `17` |
-| `DECISION_REVIEW_MODEL` | Existing OMP chat-model selector; default `@slow` |
-| `DECISION_PASS_THRESHOLD` | Initial triage threshold `0.8`; allowed `0.5`–`1` |
-| `DECISION_TIMEOUT_MS` | Inference/auth deadline, default `10000`; client allows `100`–`120000`, OMP additionally caps it at 20 seconds |
-| `AZURE_TOKEN_CREDENTIALS` | Azure Identity credential-chain selection; local launcher defaults to `AzureCliCredential` |
-
-The verified System One API uses Entra bearer authentication with scope `https://cognitiveservices.azure.com/.default`. `DECISION_API_KEY` is intentionally unsupported. For noninteractive Azure environments use an appropriate workload/managed identity through Azure Identity, retaining existing data-plane permissions. The tooling never grants RBAC or changes authentication, network access or account security.
-
-For direct extension loading, supply `DECISION_ENDPOINT` and `DECISION_DEPLOYMENT` from your runtime environment, then use `omp -e /path/to/omp-decision-advisor/src/index.ts`. The provider appends `/providers/microsoft/v1/systemone`; do not include that path in the endpoint setting.
-
-## Azure deployment
-
-All commands use your current enabled Azure subscription unless selected explicitly. They reuse an existing `AIServices` account; they do not create accounts/resource groups or alter permissions. Default output omits personal resource identifiers.
+Deployment tooling reuses an existing healthy `AIServices` account. It queries live model catalog/quota, creates only the requested Microsoft-Decision-1 deployment, or reuses an exact healthy match:
 
 ```sh
 npm run deploy -- list
@@ -117,28 +117,22 @@ npm run deploy -- plan --location eastus2 --sku DataZoneStandard --capacity 17
 npm run deploy -- apply --location eastus2 --sku DataZoneStandard --capacity 17
 ```
 
-The plan queries the live model catalog and regional quota. `apply` creates only the requested Decision-1 deployment, or reuses a healthy exact match. It refuses mismatched existing model/version/SKU/capacity rather than overwriting it. If intentionally resizing, use Azure's deployment-management tools explicitly; then run `plan` with the desired existing capacity. Azure's create API is create-or-update: do not concurrently deploy the same name through another tool.
+It never creates accounts/resource groups, grants permissions, changes network/authentication settings or deploys an advisor model. Mismatched existing model/version/SKU/capacity is rejected rather than overwritten. Intentional resizing remains an explicit Azure operation. Azure's create API is create-or-update; do not deploy the same name concurrently elsewhere. `list --show-identifiers` reveals resource names only when explicitly requested. After deployment, choose it through `/decision`; the obsolete environment-export command was removed.
 
-For ambiguous selection, add `--account` and `--resource-group` (private runtime values). `list --show-identifiers` reveals names only on explicit request. `plan/apply --print-env` prints actual endpoint exports only on explicit request; use a private terminal, never capture them in committed logs.
-
-The deployed instance has capacity **17**, confirmed by Azure as **17 requests per 60 seconds**. Capacity 1 allows only one request/minute and is unsuitable for normal tool-loop scoring. Capacity 17 can still throttle rapid runs; throughput is not unlimited and the tool never changes capacity automatically. `DataZoneStandard` limits processing to the selected US data zone, not necessarily the individual East US 2 region. It is pay-as-you-go, not a reserved-throughput SKU. Microsoft lists $0.042 per million input tokens; larger-model review costs depend on the chosen OMP provider. No automatic quota requests or spend increases.
+DataZoneStandard limits processing to the selected data zone rather than one region. This is pay-as-you-go, not a reserved-throughput SKU. Microsoft lists $0.042 per million input tokens; advisor costs depend on its OMP provider. Automatic escalation incurs advisor charges on failed/unassessed turns.
 
 ## Verification
 
 ```sh
 npm run check
 npm test
-# Set runtime DECISION_ENDPOINT, DECISION_DEPLOYMENT and AZURE_TOKEN_CREDENTIALS first:
 npm run probe
+npm run probe -- --profile work --cwd /path/to/workspace
 ```
 
-The live probe scores supplied correct arithmetic evidence versus wrong arithmetic and fabricated test claims. It exits nonzero unless it demonstrates discrimination. It prints decisions only, never credentials/endpoints. It is a smoke probe, not representative task-quality calibration.
+The probe reads the same persisted OMP settings through its configuration CLI. The plugin must be discoverable in that profile; use `omp plugin link /path/to/omp-decision-advisor` for a local checkout. The probe supplies synthetic correct arithmetic evidence versus wrong arithmetic and fabricated tests, prints sanitized judgments only and exits nonzero unless it demonstrates discrimination. It is not general task-quality calibration.
 
-Tests cover malformed probability distributions, uncertainty/flag thresholds, timeouts/cancellation, redacted error handling, endpoint safety, deployment conflicts/quota/capacity and structured review invariants. Actual OMP runs are needed to verify the extension lifecycle/UI beyond these tests.
-
-Verified locally against OMP 18.8.7 and the deployed Azure model: two tool-loop turns each produced a report, the final card retained both in order, the explicit larger-model review completed without spawning another primary turn, and the terminal rendered a single feedback table. A deliberately wrong arithmetic response was flagged and the larger reviewer returned a concrete blocker with the correct replacement. `npm run check` and all 38 regression tests passed. These controlled cases establish integration behavior, not general review accuracy.
-
-Packaging verification: a production-only archive install in an isolated OMP home auto-discovered `/decision` without local SDK/native copies, scored against the deployed Azure model, and emitted exactly one report before a print-mode process exited. The primary for this packaging smoke was a deterministic local chat fixture; no user credentials or account identifiers are included in the archive.
+Integration verification exercised the actual native `/decision` menu, existing Azure deployment selection, advisor selection, threshold editing and Save into an isolated OMP store. Restarted headless sessions used those preferences with no custom decision environment variables: a passing turn stayed silent; a failing turn automatically invoked the advisor once without restarting the primary; scoring errors and advisor timeouts were visible. The primary/advisor smoke used deterministic local chat fixtures and live Azure Decision-1 scoring.
 
 ## Sources
 

@@ -1,4 +1,4 @@
-import { DefaultAzureCredential } from "@azure/identity";
+import { AzureCliCredential, DefaultAzureCredential } from "@azure/identity";
 import { validateDecisionOptions } from "./config.js";
 import { criterionIds, verdicts, type CriterionId, type CriterionResult, type DecisionOptions, type DecisionReport, type TurnEvidence, type Verdict } from "./types.js";
 
@@ -103,7 +103,9 @@ export class AzureDecisionClient {
 
   constructor(options: DecisionOptions, dependencies: DecisionDependencies = {}) {
     this.options = validateDecisionOptions(options, dependencies.allowTestLoopback === true && dependencies.credential !== undefined);
-    this.credential = dependencies.credential ?? new DefaultAzureCredential({ processTimeoutInMs: this.options.timeoutMs });
+    this.credential = dependencies.credential ?? (this.options.credentialMode === "azure-cli"
+      ? new AzureCliCredential({ processTimeoutInMs: this.options.timeoutMs })
+      : new DefaultAzureCredential({ processTimeoutInMs: this.options.timeoutMs }));
     this.fetch = dependencies.fetch ?? globalThis.fetch;
     this.evidenceFits = dependencies.evidenceFits ?? (state => Buffer.byteLength(state, "utf8") <= MAX_EVIDENCE_BYTES);
   }

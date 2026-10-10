@@ -1,6 +1,7 @@
-import { readDecisionOptions } from "../src/config.js";
+import { toDecisionOptions } from "../src/config.js";
 import { AzureDecisionClient, DecisionError } from "../src/decision.js";
 import { criterionIds, type DecisionReport, type TurnEvidence } from "../src/types.js";
+import { readStoredDecisionSettings, SettingsSetupError } from "./settings.ts";
 
 // Public synthetic evidence only: never load files, account metadata, logs or conversation history.
 const good: TurnEvidence = {
@@ -25,7 +26,11 @@ function sanitized(report: DecisionReport) {
 }
 
 try {
-  const client = new AzureDecisionClient(readDecisionOptions());
+  const settings = await readStoredDecisionSettings(process.argv.slice(2));
+  if (!settings.endpoint || !settings.deployment) {
+    throw new SettingsSetupError("Decision scoring is not configured. Launch npm run omp -- with the same --profile/--cwd flags and use /decision to select an existing provider deployment before running this probe.");
+  }
+  const client = new AzureDecisionClient(toDecisionOptions(settings));
   const positive = await client.evaluate(good, 1);
   const negative = await client.evaluate(bad, 2);
   const differentiated = ["adherence", "correctness"] as const;
@@ -43,7 +48,11 @@ try {
   }
 } catch (error) {
   // Identity/HTTP errors may contain account identifiers or response payloads. Never echo them.
-  const code = error instanceof DecisionError ? error.code : "configuration";
-  console.error(`Azure decision probe failed (${code}); check local configuration, identity access and deployment without sharing credentials.`);
+  if (error instanceof SettingsSetupError) {
+    console.error(error.message);
+  } else {
+    const code = error instanceof DecisionError ? error.code : "configuration";
+    console.error(`Azure decision probe failed (${code}); check /decision in the same OMP profile/project, selected credential mode, identity access and deployment without sharing credentials.`);
+  }
   process.exitCode = 1;
 }

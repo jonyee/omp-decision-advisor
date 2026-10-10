@@ -1,26 +1,7 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { runAzure, type AzureRunner } from "../src/azure-cli.ts";
 import { assertReusable, eligibleModels, selectDeployment, type CatalogModel, type Deployment, type Selection, type Usage } from "./policy.ts";
 
-const execute = promisify(execFile);
 const API_VERSION = "2024-10-01";
-export type AzureRunner = <T>(args: string[]) => Promise<T>;
-
-export const runAzure: AzureRunner = async <T>(args: string[]): Promise<T> => {
-  try {
-    const { stdout } = await execute("az", [...args, "--only-show-errors", "--output", "json"], {
-      shell: false, timeout: 180_000, maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, AZURE_CORE_COLLECT_TELEMETRY: "false", AZURE_CORE_LOGGING_ENABLE_LOG_FILE: "false" },
-    });
-    return JSON.parse(stdout) as T;
-  } catch (error) {
-    // Azure errors and execFile error messages can contain resource IDs, endpoints and argument arrays.
-    const stderr = typeof error === "object" && error && "stderr" in error ? String(error.stderr) : "";
-    const codes = ["AuthorizationFailed", "Forbidden", "InsufficientQuota", "QuotaExceeded", "DeploymentModelNotSupported", "InvalidResourceProperties", "Conflict", "RequestDisallowedByPolicy", "ResourceNotFound"];
-    const code = codes.find(value => stderr.includes(value));
-    throw new Error(`Azure CLI operation failed${code ? ` (${code})` : ""}. Check local Azure sign-in, read/deployment permissions, model access, quota and policy. Raw diagnostics are suppressed to protect resource identifiers.`);
-  }
-};
 
 export interface Account {
   name: string;
@@ -158,14 +139,6 @@ export function safePlan(plan: Plan): object {
     networkAccess: plan.account.properties?.publicNetworkAccess ?? "unknown", changes: plan.action === "create" ? "Only the requested model deployment" : "None" };
 }
 
-export function environmentInstructions(plan: Plan): string {
-  const endpoint = plan.account.properties?.endpoint;
-  if (!endpoint) throw new Error("The selected account does not expose an endpoint; inspect it locally in Azure.");
-  const url = safeUrl(endpoint);
-  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new Error("Azure returned an unexpected account endpoint.");
-  const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
-  return `export DECISION_ENDPOINT=${quote(endpoint)}\nexport DECISION_DEPLOYMENT=${quote(plan.deployment)}\n# Uses runtime Azure identity; no API key is retrieved.\n`;
-}
 
 function safeUrl(value: string): URL {
   try { return new URL(value); }
