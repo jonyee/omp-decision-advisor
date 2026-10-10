@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { discoverDecisionDeployments } from "../src/azure-models.js";
 import type { AzureRunner } from "../src/azure-cli.js";
-import { normalizeDecisionSettings, toDecisionOptions, type DecisionSettings } from "../src/config.js";
+import { MAX_REVIEW_INSTRUCTIONS_BYTES, normalizeDecisionSettings, toDecisionOptions, type DecisionSettings } from "../src/config.js";
+import { ELEVATED_REVIEW_TOOLS, parseReviewTools } from "../src/review-tools.js";
 
 const configured: DecisionSettings = {
   enabled: true,
@@ -13,6 +14,9 @@ const configured: DecisionSettings = {
   passThreshold: 0.72,
   timeoutMs: 750,
   advisorTimeoutMs: 1_250,
+  reviewTools: "read,grep,glob",
+  reviewInstructions: "",
+  reviewHistoryTurns: 3,
 };
 
 test("unconfigured preferences are readable but cannot create scoring options", () => {
@@ -102,6 +106,75 @@ test("invalid advisor selectors and unknown credential modes cannot become persi
   for (const credentialMode of ["cli", "key", "", null]) {
     assert.throws(() => normalizeDecisionSettings({ ...configured, credentialMode }));
   }
+});
+
+test("existing profiles receive bounded reviewer defaults without adding elevated grants", () => {
+  const defaults = normalizeDecisionSettings({});
+  assert.equal(parseReviewTools(defaults.reviewTools).some(tool => ELEVATED_REVIEW_TOOLS.includes(tool)), false);
+});
+
+test("reviewer tools normalize comma and whitespace grants in deterministic supported order", () => {
+  assert.deepEqual(parseReviewTools(" GLOB, READ grep,read\nGrep\tglob "), ["read", "grep", "glob"]);
+  assert.equal(normalizeDecisionSettings({ reviewTools: "write, BASH, read,read" }).reviewTools, "read,bash,write");
+});
+
+test("empty reviewer grants remain empty across normalization and preference round trips", () => {
+  for (const reviewTools of ["", "  ", ", ,\n\t"]) {
+    const settings = normalizeDecisionSettings({ ...configured, reviewTools });
+    assert.equal(settings.reviewTools, "");
+    assert.deepEqual(parseReviewTools(settings.reviewTools), []);
+    assert.equal(normalizeDecisionSettings(JSON.parse(JSON.stringify(settings))).reviewTools, "");
+  }
+});
+
+test("unknown and non-string reviewer grants cannot become persisted preferences", () => {
+  for (const reviewTools of ["task", "spawn", "mcp", "custom_tool", "read,unknown", "read;bash", null, 0, ["read"], {}]) {
+    assert.throws(() => normalizeDecisionSettings({ reviewTools }));
+  }
+  assert.throws(() => parseReviewTools("READ task"), /Unknown reviewer tool: task/);
+});
+
+test("saved reviewer preferences survive triage changes without granting additional tools", () => {
+  const preferences = normalizeDecisionSettings({
+    ...configured,
+    reviewTools: "recall,read,lsp",
+    reviewInstructions: "  Check evidence.\n\tExplain uncertainty.\r\n",
+    reviewHistoryTurns: 8,
+  });
+  const restored = normalizeDecisionSettings(JSON.parse(JSON.stringify(preferences)));
+  const changed = normalizeDecisionSettings({ ...restored, passThreshold: 0.9, reviewModel: "@advisor" });
+  assert.equal(changed.reviewTools, "read,recall,lsp");
+  assert.equal(changed.reviewInstructions, preferences.reviewInstructions);
+  assert.equal(changed.reviewHistoryTurns, 8);
+  assert.equal(parseReviewTools(changed.reviewTools).some(tool => ELEVATED_REVIEW_TOOLS.includes(tool)), false);
+  const scoring = toDecisionOptions(changed);
+  for (const key of ["reviewTools", "reviewInstructions", "reviewHistoryTurns"]) assert.equal(Object.hasOwn(scoring, key), false);
+});
+
+test("review history preferences accept only integers from zero through eight", () => {
+  for (let reviewHistoryTurns = 0; reviewHistoryTurns <= 8; reviewHistoryTurns++) {
+    assert.equal(normalizeDecisionSettings({ reviewHistoryTurns }).reviewHistoryTurns, reviewHistoryTurns);
+  }
+  for (const reviewHistoryTurns of [-1, 9, 0.5, 3.1, NaN, Infinity, -Infinity, "3", null, false, []]) {
+    assert.throws(() => normalizeDecisionSettings({ reviewHistoryTurns }));
+  }
+});
+
+test("reviewer instructions preserve multiline content and enforce UTF-8 byte boundaries", () => {
+  for (const reviewInstructions of ["", " \t\n\r ", "x".repeat(MAX_REVIEW_INSTRUCTIONS_BYTES), "é".repeat(MAX_REVIEW_INSTRUCTIONS_BYTES / 2), "😀".repeat(MAX_REVIEW_INSTRUCTIONS_BYTES / 4)]) {
+    assert.equal(normalizeDecisionSettings({ reviewInstructions }).reviewInstructions, reviewInstructions);
+  }
+  for (const reviewInstructions of ["x".repeat(MAX_REVIEW_INSTRUCTIONS_BYTES + 1), "é".repeat(MAX_REVIEW_INSTRUCTIONS_BYTES / 2 + 1), "😀".repeat(MAX_REVIEW_INSTRUCTIONS_BYTES / 4 + 1), null, 42, []]) {
+    assert.throws(() => normalizeDecisionSettings({ reviewInstructions }));
+  }
+});
+
+test("reviewer instructions reject forbidden controls without scanning ordinary content", () => {
+  for (const control of ["\u0000", "\u0001", "\u0008", "\u000b", "\u000c", "\u000e", "\u001f", "\u007f", "\u0085", "\u009f"]) {
+    assert.throws(() => normalizeDecisionSettings({ reviewInstructions: `${control}text${control}` }), /control characters/);
+  }
+  const reviewInstructions = "Review names such as token, password and credential as ordinary text.";
+  assert.equal(normalizeDecisionSettings({ reviewInstructions }).reviewInstructions, reviewInstructions);
 });
 
 test("Azure model selection offers only healthy existing Decision-1 deployments", async () => {

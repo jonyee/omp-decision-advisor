@@ -1,14 +1,21 @@
+import { Buffer } from "node:buffer";
+import { parseReviewTools } from "./review-tools.js";
 import type { DecisionOptions } from "./types.js";
 
 export const MIN_PASS_THRESHOLD = 0.5;
 export const MIN_TIMEOUT_MS = 100;
 export const MAX_TIMEOUT_MS = 120_000;
 export const MAX_HOST_TIMEOUT_MS = 20_000;
+export const MAX_REVIEW_INSTRUCTIONS_BYTES = 8_192;
+export const MAX_REVIEW_HISTORY_TURNS = 8;
 
 export interface DecisionSettings extends DecisionOptions {
   enabled: boolean;
   reviewModel: string;
   advisorTimeoutMs: number;
+  reviewTools: string;
+  reviewInstructions: string;
+  reviewHistoryTurns: number;
 }
 
 function validateEndpoint(value: string, allowTestLoopback = false): string {
@@ -93,16 +100,29 @@ export function normalizeDecisionSettings(raw: Record<string, unknown>): Decisio
   const passThreshold = numberSetting(raw, "passThreshold", 0.8);
   const timeoutMs = numberSetting(raw, "timeoutMs", 10_000);
   const advisorTimeoutMs = numberSetting(raw, "advisorTimeoutMs", 20_000);
+  const reviewTools = parseReviewTools(stringSetting(raw, "reviewTools", "read,grep,glob")).join(",");
+  const reviewInstructions = raw.reviewInstructions === undefined ? "" : raw.reviewInstructions;
+  if (typeof reviewInstructions !== "string") throw new Error("reviewInstructions must be a string.");
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(reviewInstructions)) {
+    throw new Error("Reviewer instructions must not contain control characters other than tab, newline or carriage return.");
+  }
+  if (Buffer.byteLength(reviewInstructions, "utf8") > MAX_REVIEW_INSTRUCTIONS_BYTES) {
+    throw new Error(`Reviewer instructions must not exceed ${MAX_REVIEW_INSTRUCTIONS_BYTES} UTF-8 bytes.`);
+  }
+  const reviewHistoryTurns = numberSetting(raw, "reviewHistoryTurns", 3);
+  if (!Number.isInteger(reviewHistoryTurns) || reviewHistoryTurns < 0 || reviewHistoryTurns > MAX_REVIEW_HISTORY_TURNS) {
+    throw new Error(`Review history entries must be an integer from 0 to ${MAX_REVIEW_HISTORY_TURNS}.`);
+  }
   const endpoint = endpointValue ? validateEndpoint(endpointValue) : "";
   if (deployment) validateDeployment(deployment);
   if (!reviewModel || /[\u0000-\u001f\u007f]/.test(reviewModel)) {
-    throw new Error("Advisor model must be a nonblank OMP model selector or role, without control characters.");
+    throw new Error("Reviewer model must be a nonblank OMP model selector or role, without control characters.");
   }
   validateCredentialMode(credentialMode);
   validateThreshold(passThreshold);
   validateTimeout(timeoutMs, MAX_HOST_TIMEOUT_MS, "Scoring timeout");
-  validateTimeout(advisorTimeoutMs, MAX_HOST_TIMEOUT_MS, "Automatic advisor timeout");
-  return { enabled, endpoint, deployment, reviewModel, credentialMode, passThreshold, timeoutMs, advisorTimeoutMs };
+  validateTimeout(advisorTimeoutMs, MAX_HOST_TIMEOUT_MS, "Automatic reviewer timeout");
+  return { enabled, endpoint, deployment, reviewModel, credentialMode, passThreshold, timeoutMs, advisorTimeoutMs, reviewTools, reviewInstructions, reviewHistoryTurns };
 }
 
 export function toDecisionOptions(settings: DecisionSettings): DecisionOptions {

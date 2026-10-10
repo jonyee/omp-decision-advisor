@@ -1,6 +1,6 @@
 # OMP Decision advisor
 
-Microsoft-Decision-1 on Azure Foundry reviews every completed **primary model turn**, including tool-loop turns. Passing turns are silent. A failed triage check automatically starts the configured OMP advisor model; only failures and their advisor review are displayed.
+Microsoft-Decision-1 on Azure Foundry reviews every completed **primary model turn**, including tool-loop turns. Passing turns are silent. A failed triage check automatically starts a configurable **extension escalation reviewer**; only failures and their review are displayed. This is not OMP's native advisor runtime: choosing `@advisor` selects its model role, not its watchdog tools, scheduling or delivery machinery.
 
 The extension and Azure deployment tooling share this repository. No Nix configuration changes are required.
 
@@ -34,7 +34,7 @@ For an archive, run `npm pack --ignore-scripts` in the checkout, then:
 ```sh
 npm install --ignore-scripts --omit=dev \
   --prefix "$HOME/.local/share/omp-decision-extensions" \
-  /path/to/omp-decision-advisor-0.3.0.tgz
+  /path/to/omp-decision-advisor-0.4.0.tgz
 omp install "$HOME/.local/share/omp-decision-extensions/node_modules/omp-decision-advisor"
 ```
 
@@ -42,18 +42,28 @@ OMP treats local install targets as directories to link, not tarballs: install t
 
 ## Configure in OMP
 
-Run `/decision` to open the control menu: **on**, **off**, **status**, and **settings**. On/off is saved per active OMP profile and applies immediately; off cancels in-flight automatic work and prevents turn scoring or advisor calls. Existing profiles remain on by default. Choose **settings** to open the preference editor below.
+Run `/decision` to open the control menu: **on**, **off**, **status**, and **settings**. On/off is saved per active OMP profile and applies immediately; off cancels in-flight automatic work and prevents turn scoring or escalation reviews. Existing profiles remain on by default. Choose **settings** to open the preference editor below.
 
 | Preference | Purpose |
 |---|---|
 | Scoring model | Choose a healthy existing Microsoft-Decision-1 Azure deployment, or enter its endpoint and deployment manually |
-| Advisor model | Choose an authenticated OMP chat model, an explicit selector, or OMP's `@advisor` role |
+| Reviewer model | Choose an authenticated OMP chat model, explicit selector, or the `@advisor` model role |
+| Tools | Explicit grants; initially `read,grep,glob`; blank means no tools |
+| Instructions | Additional multiline reviewer preferences, up to 8192 UTF-8 bytes; never put credentials here |
+| Review history entries | Retain up to 3 completed prior-review summaries by default; integer 0–8, with 0 disabling history |
 | Azure credentials | Azure CLI identity (`az login`, recommended locally), or `DefaultAzureCredential` |
 | Pass threshold | Start at `0.8`; allowed `0.5`–`1`; lower means fewer escalations, higher is stricter |
 | Scoring timeout | Authentication and inference deadline; initially 10000 ms, allowed 100–20000 ms |
-| Automatic advisor timeout | Review deadline; initially 20000 ms, allowed 100–20000 ms |
+| Automatic reviewer timeout | Review deadline; initially 20000 ms, allowed 100–20000 ms |
 
 **Save** persists the draft in OMP's existing plugin settings store, then applies it immediately to the running extension. **Cancel** makes no changes. Changing settings cancels outstanding old-configuration work and clears the old latest-turn report.
+
+The Tools picker can grant `read`, `grep`, `glob`, `recall`, read-only `lsp`, `web_search`, `bash`, `eval`, `edit`, `write`, `ast_edit` and `debug`. Enabling command-execution/mutating tools requires an immediate confirmation and an elevated-grant warning at final Save. Cancel in the picker discards its draft. Selecting `recall` requires an existing Hindsight/Mnemopi bank; `lsp` requires configured servers; web/code/debug tools retain their normal host prerequisites. Missing selected tools produce an explicit review error **before** a model call, rather than silently dropping grants. MCP, ambient extensions, IRC and subagent spawning remain disabled.
+
+The reviewer uses the main session's normal OMP approval settings in a nonpersistent overlay; tool grants do not bypass approval. Headless calls that cannot obtain a required approval fail closed. Fresh tool results remain secret-obfuscated, even if the primary did not enable obfuscation. A reviewer with `bash`, `eval`, `write`, `edit`, `ast_edit` or `debug` can affect files/processes/external resources when approval permits it; this is not a sandbox. Default grants remain read-only. Read-only `lsp` cannot perform refactors or formatting.
+
+History contains only completed review summaries: primary turn number, user request and validated findings/verdict. It is in memory, sorted by primary turn, and capped at both the configured entry count and **16384 serialized UTF-8 bytes**. Old/oversized entries are omitted whole, never truncated. A review receives only already-completed earlier turns; concurrent reviews do not see each other's unfinished work. Settings changes, on/off, branching, compaction, session switches and shutdown clear history. There is no cross-session replay or retained native advisor/tool transcript.
+
 
 Preferences live under `settings["omp-decision-advisor"]` in the active profile's `omp-plugins.lock.json`; the default layout is `~/.omp/plugins/omp-plugins.lock.json`. Named profiles and initialized XDG layouts use OMP's normal paths. Project plugin overrides retain OMP's normal precedence; the UI warns if they shadow a saved profile value and reloads the effective values.
 
@@ -67,8 +77,8 @@ Commands:
 
 - `/decision` — open the on/off/status/settings control menu.
 - `/decision on` / `/decision off` — persist the automatic-review state; explicit diagnostics remain available when off.
-- `/decision settings` — edit saved provider, model, threshold, credential and timeout preferences.
-- `/decision status` — show current configuration and latest stored scores, and perform a live smoke test. It sends one batched request with a matching and mismatching synthetic reply against a supplied arithmetic reference; it never sends conversation history or invokes the advisor. A wrong classification is a failed smoke; network/authentication/malformed-response failures are errors, not passes. It works while automatic review is off, is cancellable in the TUI, and incurs one small model request when configured. An unconfigured provider is reported without making a request. This is a functional smoke, not general quality calibration.
+- `/decision settings` — edit saved provider, reviewer model, tools, instructions, history, triage and timeout preferences.
+- `/decision status` — show current configuration and latest stored scores, and perform a live smoke test. It sends one batched request with a matching and mismatching synthetic reply against a supplied arithmetic reference; it never sends conversation history or invokes the escalation reviewer. A wrong classification is a failed smoke; network/authentication/malformed-response failures are errors, not passes. It works while automatic review is off, is cancellable in the TUI, and incurs one small model request when configured. An unconfigured provider is reported without making a request. This is a functional smoke, not general quality calibration.
 - `/decision review` — show/reuse the automatically requested review, or explicitly review a captured passing turn. It does not issue a duplicate review for the same captured turn.
 
 For headless administration, use OMP's existing plugin configuration CLI:
@@ -89,13 +99,13 @@ A turn fails triage if **any** criterion has a non-`pass` verdict (`concern`, `b
 
 `0.8` is a conservative starting triage threshold, not a calibrated guarantee. Try `0.7` if representative examples show too many low-confidence false alarms; increasing the threshold is stricter. Explicit non-pass verdicts still escalate regardless of the threshold. Missing evidence is uncertainty, not proof of a defect.
 
-Passing scores are retained in ordinary OMP session entries but produce no automatic table, notification or JSON feedback. A failure displays its scores and automatically invokes the selected advisor with the actual turn evidence. Scoring/authentication/network/context-size failures display **not evaluated** and also invoke the advisor without a score; they never become a fabricated pass. Advisor failure or timeout is visible and applies no findings.
+Passing scores are retained in ordinary OMP session entries but produce no automatic table, notification or JSON feedback. A failure displays its scores and automatically invokes the selected escalation reviewer with the actual turn evidence. Scoring/authentication/network/context-size failures display **not evaluated** and also invoke the reviewer without a score; they never become a fabricated pass. Reviewer failure or timeout is visible and applies no findings.
 
-The advisor may accept a flagged turn: that means the first-stage flag was not confirmed. Advisor findings are displayed and queued as advisory context for the primary's next natural turn. The extension does not automatically restart the primary, approve an action or change its model. The advisor has only `read`, `grep` and `glob`; no extensions, MCP, IRC or mutating tools. Fresh reviewer tool results remain secret-obfuscated. Read-only tools are not a filesystem sandbox.
+The escalation reviewer may accept a flagged turn: that means the first-stage flag was not confirmed. Findings are displayed and queued as advisory context for the primary's next natural turn. The extension does not automatically restart the primary, approve an action or change its model. Tools, additional instructions and bounded review summaries are configurable above; native `WATCHDOG.yml` grants, native advisor history, severity-based steering and native advisor recovery are not inherited. OMP itself needs no patch or replacement.
 
-An advisor review requires a separate model invocation because it depends on Decision-1's result and uses a different model. Investigation can require further advisor model calls after tool results. Passing turns have no advisor calls. The current endpoint allowance reported by the owner is **17 requests/second**; count one Decision-1 request per primary turn, not one per criterion. The extension does not alter capacity or quota.
+An escalation review requires a separate model invocation because it depends on Decision-1's result and uses a different model. Investigation can require further reviewer model calls after tool results. Passing turns have no escalation calls. The current endpoint allowance reported by the owner is **17 requests/second**; count one Decision-1 request per primary turn, not one per criterion. The extension does not alter capacity or quota.
 
-Both scoring and automatic review are bounded below OMP's 30-second hook budget. Separate finalization gates wait for outstanding scoring and advisor work, including in print/JSON mode. Failed-turn reviews can overlap without replacing the latest turn's state. Session changes cancel stale work. Feedback cards are excluded from primary/judge input; advisor findings enter separately, avoiding self-review loops.
+Both scoring and automatic review are bounded below OMP's 30-second hook budget. Separate finalization gates wait for outstanding scoring and reviewer work, including in print/JSON mode. Failed-turn reviews can overlap without replacing the latest turn's state. Session changes cancel stale work. Automatic feedback is rendered in a TUI widget or RPC notifications, or JSON records in headless mode—not queued as visible transcript messages during unwind. This avoids hidden primary continuations. Findings enter primary context separately; stored scores/results remain in ordinary OMP custom session entries.
 
 Review is post-turn and cannot prevent a tool action that already happened. Evidence includes standing instructions, the latest user request, up to eight recent messages, and the current assistant/tool results. OMP's Qwen tokenizer limits evidence to 24000 tokens, reserving space within the model's 32768-token context for rubrics. The standalone client uses a stricter 28000-byte budget without a host tokenizer. Oversized evidence is rejected rather than silently truncated. Attachments are explicitly unavailable to this text-only judge.
 
@@ -134,9 +144,11 @@ npm run probe -- --profile work --cwd /path/to/workspace
 
 The probe reads the same persisted OMP settings through its configuration CLI. The plugin must be discoverable in that profile; use `omp plugin link /path/to/omp-decision-advisor` for a local checkout. The probe supplies synthetic correct arithmetic evidence versus wrong arithmetic and fabricated tests, prints sanitized judgments only and exits nonzero unless it demonstrates discrimination. It is not general task-quality calibration.
 
-Integration verification exercised the actual native `/decision` menu, existing Azure deployment selection, advisor selection, threshold editing and Save into an isolated OMP store. Restarted headless sessions used those preferences with no custom decision environment variables: a passing turn stayed silent; a failing turn automatically invoked the advisor once without restarting the primary; scoring errors and advisor timeouts were visible. The primary/advisor smoke used deterministic local chat fixtures and live Azure Decision-1 scoring.
+Integration verification exercised the native `/decision` controls/preferences in an isolated OMP profile. With live Azure Decision-1 scoring and deterministic local chat fixtures, passing turns stayed silent and failed turns invoked the escalation reviewer. The reviewer executed a real file read, received only selected tools and saved instructions, used completed earlier summaries and cleared them on settings reset. Two user prompts produced exactly two primary model calls; feedback did not start hidden turns.
 
 Additional native TUI verification covered the four-action control menu, a focused loading state during delayed deployment discovery, ignored main-editor input while loading, Escape cancellation with subprocess termination, and safe manual-entry fallback on query errors. Live `/decision status` smoke passed against Azure while automatic review was off; off/on transitions survived restarts and restored automatic review only when enabled.
+
+Expanded-reviewer TUI verification covered declined elevated grants, picker cancellation, explicit elevated confirmation at Save, multiline instructions and history tuning. A user-granted `write` changed only a temporary smoke file; inherited `always-ask` approval prevented that mutation in a headless run. Fresh read results honored configured secret redaction. An unavailable `recall` grant failed before the reviewer model was called, and explicit empty grants exposed no tools.
 
 ## Sources
 
