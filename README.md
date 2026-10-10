@@ -34,7 +34,7 @@ For an archive, run `npm pack --ignore-scripts` in the checkout, then:
 ```sh
 npm install --ignore-scripts --omit=dev \
   --prefix "$HOME/.local/share/omp-decision-extensions" \
-  /path/to/omp-decision-advisor-0.4.0.tgz
+  /path/to/omp-decision-advisor-0.5.0.tgz
 omp install "$HOME/.local/share/omp-decision-extensions/node_modules/omp-decision-advisor"
 ```
 
@@ -55,6 +55,7 @@ Run `/decision` to open the control menu: **on**, **off**, **status**, and **set
 | Pass threshold | Start at `0.8`; allowed `0.5`–`1`; lower means fewer escalations, higher is stricter |
 | Scoring timeout | Authentication and inference deadline; initially 10000 ms, allowed 100–20000 ms |
 | Automatic reviewer timeout | Review deadline; initially 20000 ms, allowed 100–20000 ms |
+| Verbose output | Off by default; show passing scores, complete scoring/review JSON and reviewer-request progress when on |
 
 **Save** persists the draft in OMP's existing plugin settings store, then applies it immediately to the running extension. **Cancel** makes no changes. Changing settings cancels outstanding old-configuration work and clears the old latest-turn report.
 
@@ -80,6 +81,7 @@ Commands:
 - `/decision settings` — edit saved provider, reviewer model, tools, instructions, history, triage and timeout preferences.
 - `/decision status` — show current configuration and latest stored scores, and perform a live smoke test. It sends one batched request with a matching and mismatching synthetic reply against a supplied arithmetic reference; it never sends conversation history or invokes the escalation reviewer. A wrong classification is a failed smoke; network/authentication/malformed-response failures are errors, not passes. It works while automatic review is off, is cancellable in the TUI, and incurs one small model request when configured. An unconfigured provider is reported without making a request. This is a functional smoke, not general quality calibration.
 - `/decision review` — show/reuse the automatically requested review, or explicitly review a captured passing turn. It does not issue a duplicate review for the same captured turn.
+- `/decision verbose` — toggle saved verbose output; `/decision verbose on` / `/decision verbose off` set it explicitly. This applies immediately and clears old-configuration review state, like other settings changes.
 
 For headless administration, use OMP's existing plugin configuration CLI:
 
@@ -99,13 +101,16 @@ A turn fails triage if **any** criterion has a non-`pass` verdict (`concern`, `b
 
 `0.8` is a conservative starting triage threshold, not a calibrated guarantee. Try `0.7` if representative examples show too many low-confidence false alarms; increasing the threshold is stricter. Explicit non-pass verdicts still escalate regardless of the threshold. Missing evidence is uncertainty, not proof of a defect.
 
-Passing scores are retained in ordinary OMP session entries but produce no automatic table, notification or JSON feedback. A failure displays its scores and automatically invokes the selected escalation reviewer with the actual turn evidence. Scoring/authentication/network/context-size failures display **not evaluated** and also invoke the reviewer without a score; they never become a fabricated pass. Reviewer failure or timeout is visible and applies no findings.
+With verbose off, passing scores are retained in ordinary OMP session entries but produce no automatic output. A failure displays its scores and requests the escalation reviewer. An accepted review replaces that turn's panel with just **“The advisor was requested but had no findings.”** Reviews with findings use advisor-style severity badges and note rails, followed by evidence and recommendations—not JSON. An uncertain review without findings says that the advisor could not determine whether a correction is needed. Scoring errors remain **not evaluated**, and reviewer errors never become accepts.
 
 The escalation reviewer may accept a flagged turn: that means the first-stage flag was not confirmed. Findings are displayed and queued as advisory context for the primary's next natural turn. The extension does not automatically restart the primary, approve an action or change its model. Tools, additional instructions and bounded review summaries are configurable above; native `WATCHDOG.yml` grants, native advisor history, severity-based steering and native advisor recovery are not inherited. OMP itself needs no patch or replacement.
 
 An escalation review requires a separate model invocation because it depends on Decision-1's result and uses a different model. Investigation can require further reviewer model calls after tool results. Passing turns have no escalation calls. The current endpoint allowance reported by the owner is **17 requests/second**; count one Decision-1 request per primary turn, not one per criterion. The extension does not alter capacity or quota.
 
-Both scoring and automatic review are bounded below OMP's 30-second hook budget. Separate finalization gates wait for outstanding scoring and reviewer work, including in print/JSON mode. Failed-turn reviews can overlap without replacing the latest turn's state. Session changes cancel stale work. Automatic feedback is rendered in a TUI widget or RPC notifications, or JSON records in headless mode—not queued as visible transcript messages during unwind. This avoids hidden primary continuations. Findings enter primary context separately; stored scores/results remain in ordinary OMP custom session entries.
+Both scoring and automatic review are bounded below OMP's 30-second hook budget. Separate finalization gates wait for outstanding scoring and reviewer work. Feedback initially appears above the input while idle. Panels longer than six rendered lines collapse to a preview; **Ctrl+O** uses OMP's native expansion state to show/hide all lines, alongside normal tool-output expansion. When the next user-driven primary turn starts, the completed panel is injected into the scrolling transcript through the awaited `before_agent_start` hook, then removed from the input area. It is never queued during the previous shutdown, so presentation does not start an extra primary turn. Display-only feedback is excluded from provider/judge context; actionable findings enter separately.
+
+Verbose mode preserves the normal scoring/review output plus complete sanitized report/result JSON and reviewer-request progress. It also prints passing score reports, without requesting a reviewer for them. In ordinary print mode, accepted reviews are a plain note and findings are plain structured notes; full reviewer JSON is shown only when verbose. Protocol JSON mode retains structured records for machine consumers regardless of presentation preference. Provider tokens, raw upstream errors and conversation evidence are not printed by verbose mode. Full validated scores/results remain in OMP custom session entries.
+
 
 Review is post-turn and cannot prevent a tool action that already happened. Evidence includes standing instructions, the latest user request, up to eight recent messages, and the current assistant/tool results. OMP's Qwen tokenizer limits evidence to 24000 tokens, reserving space within the model's 32768-token context for rubrics. The standalone client uses a stricter 28000-byte budget without a host tokenizer. Oversized evidence is rejected rather than silently truncated. Attachments are explicitly unavailable to this text-only judge.
 
@@ -149,6 +154,8 @@ Integration verification exercised the native `/decision` controls/preferences i
 Additional native TUI verification covered the four-action control menu, a focused loading state during delayed deployment discovery, ignored main-editor input while loading, Escape cancellation with subprocess termination, and safe manual-entry fallback on query errors. Live `/decision status` smoke passed against Azure while automatic review was off; off/on transitions survived restarts and restored automatic review only when enabled.
 
 Expanded-reviewer TUI verification covered declined elevated grants, picker cancellation, explicit elevated confirmation at Save, multiline instructions and history tuning. A user-granted `write` changed only a temporary smoke file; inherited `always-ask` approval prevented that mutation in a headless run. Fresh read results honored configured secret redaction. An unavailable `recall` grant failed before the reviewer model was called, and explicit empty grants exposed no tools.
+
+Presentation verification exercised the actual native TUI advisor-style notes and six-line preview, Ctrl+O expansion without overriding the built-in shortcut, concise accepted-review notes, and transfer into scrolling output at the next user boundary. RPC and print-mode smokes exercised accepted/actionable review formatting and saved verbose controls. Live Azure scoring showed passing reports only in verbose mode; verbose escalation included a request-progress note and full accepted result. Type checking and 117 regression tests passed.
 
 ## Sources
 

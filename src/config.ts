@@ -11,6 +11,7 @@ export const MAX_REVIEW_HISTORY_TURNS = 8;
 
 export interface DecisionSettings extends DecisionOptions {
   enabled: boolean;
+  verbose: boolean;
   reviewModel: string;
   advisorTimeoutMs: number;
   reviewTools: string;
@@ -93,6 +94,7 @@ function booleanSetting(raw: Record<string, unknown>, key: string, fallback: boo
 /** Normalize persisted preferences without requiring an already configured Azure provider. */
 export function normalizeDecisionSettings(raw: Record<string, unknown>): DecisionSettings {
   const enabled = booleanSetting(raw, "enabled", true);
+  const verbose = booleanSetting(raw, "verbose", false);
   const endpointValue = stringSetting(raw, "endpoint", "");
   const deployment = stringSetting(raw, "deployment", "");
   const reviewModel = stringSetting(raw, "reviewModel", "@advisor");
@@ -122,7 +124,7 @@ export function normalizeDecisionSettings(raw: Record<string, unknown>): Decisio
   validateThreshold(passThreshold);
   validateTimeout(timeoutMs, MAX_HOST_TIMEOUT_MS, "Scoring timeout");
   validateTimeout(advisorTimeoutMs, MAX_HOST_TIMEOUT_MS, "Automatic reviewer timeout");
-  return { enabled, endpoint, deployment, reviewModel, credentialMode, passThreshold, timeoutMs, advisorTimeoutMs, reviewTools, reviewInstructions, reviewHistoryTurns };
+  return { enabled, verbose, endpoint, deployment, reviewModel, credentialMode, passThreshold, timeoutMs, advisorTimeoutMs, reviewTools, reviewInstructions, reviewHistoryTurns };
 }
 
 export function toDecisionOptions(settings: DecisionSettings): DecisionOptions {

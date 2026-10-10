@@ -22,6 +22,7 @@ export async function showDecisionStatus(ctx: ExtensionCommandContext, settings:
   }
   const lines = [
     `Automatic turn review: ${settings.enabled ? "on" : "off"}`,
+    `Verbose output: ${settings.verbose ? "on" : "off"}`,
     `Scoring deployment: ${settings.deployment || "not configured"}`,
     `Escalation reviewer: ${settings.reviewModel}`,
     `Reviewer tools: ${settings.reviewTools || "none"}`,
@@ -45,7 +46,7 @@ export async function showDecisionStatus(ctx: ExtensionCommandContext, settings:
     }
   } else lines.push(last ? `Last primary turn ${last.turn}: not evaluated.` : "No primary turn recorded yet.");
   lines.push("Smoke tests use at most one synthetic Decision request and never invoke the escalation reviewer.");
-  const record = { type: "decision_status", enabled: settings.enabled, deployment: settings.deployment, reviewer: settings.reviewModel, reviewerTools: settings.reviewTools, reviewHistoryTurns: settings.reviewHistoryTurns, passThreshold: settings.passThreshold, smoke: { state, result: smoke, errorCode }, last: last?.report };
+  const record = { type: "decision_status", enabled: settings.enabled, verbose: settings.verbose, deployment: settings.deployment, reviewer: settings.reviewModel, reviewerTools: settings.reviewTools, reviewHistoryTurns: settings.reviewHistoryTurns, passThreshold: settings.passThreshold, smoke: { state, result: smoke, errorCode }, last: last?.report };
   if (ctx.mode === "print" || ctx.mode === "json") console.log(JSON.stringify(record));
   else await ctx.ui.select("Decision advisor status", [{ label: "Close", description: lines.join("\n") }]);
 }

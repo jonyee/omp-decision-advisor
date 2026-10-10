@@ -109,6 +109,7 @@ export async function configureDecision(ctx: ExtensionCommandContext): Promise<D
       { label: "Pass threshold", description: `${draft.passThreshold} · lower means fewer reviews; higher is stricter (0.5–1).` },
       { label: "Scoring timeout", description: `${draft.timeoutMs} ms (100–20000).` },
       { label: "Automatic reviewer timeout", description: `${draft.advisorTimeoutMs} ms (100–20000).` },
+      { label: "Verbose output", description: draft.verbose ? "On: all scoring results, full review JSON and progress notes." : "Off: silent passes, concise review notes without JSON." },
       { label: "Save", description: "Persist preferences in the active OMP profile; Azure credentials are never saved." },
       { label: "Cancel", description: "Discard this draft without changing preferences." },
     ]);
@@ -146,6 +147,8 @@ export async function configureDecision(ctx: ExtensionCommandContext): Promise<D
           if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value.trim())) throw new Error("Enter a decimal number without units.");
           draft = normalizeDecisionSettings({ ...draft, [key]: Number(value.trim()) });
         }
+      } else if (choice === "Verbose output") {
+        draft = { ...draft, verbose: !draft.verbose };
       } else if (choice === "Save") {
         const validated = normalizeDecisionSettings({ ...draft });
         if (validated.endpoint || validated.deployment) toDecisionOptions(validated);

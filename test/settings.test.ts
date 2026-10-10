@@ -7,6 +7,7 @@ import { ELEVATED_REVIEW_TOOLS, parseReviewTools } from "../src/review-tools.js"
 
 const configured: DecisionSettings = {
   enabled: true,
+  verbose: false,
   endpoint: "https://example.invalid",
   deployment: "chosen-decision",
   reviewModel: "provider/chosen-advisor",
@@ -18,6 +19,15 @@ const configured: DecisionSettings = {
   reviewInstructions: "",
   reviewHistoryTurns: 3,
 };
+
+test("verbose output is a validated independent preference", () => {
+  const saved = normalizeDecisionSettings({ ...configured, verbose: true, enabled: false });
+  const restored = normalizeDecisionSettings(JSON.parse(JSON.stringify(saved)));
+  assert.equal(restored.verbose, true);
+  assert.equal(restored.enabled, false);
+  assert.equal(normalizeDecisionSettings({ ...restored, verbose: false }).verbose, false);
+  for (const verbose of ["true", 1, null]) assert.throws(() => normalizeDecisionSettings({ ...configured, verbose }), /verbose must be a boolean/);
+});
 
 test("unconfigured preferences are readable but cannot create scoring options", () => {
   const settings = normalizeDecisionSettings({ endpoint: "", deployment: "", reviewModel: configured.reviewModel });
