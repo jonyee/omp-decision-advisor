@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+.azure/
+.omp/
+*.log
+coverage/
+.local/
+*.tgz

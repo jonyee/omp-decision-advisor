@@ -1,0 +1,38 @@
+{
+  "name": "omp-decision-advisor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Per-turn Azure Decision-1 scoring and on-demand OMP review",
+  "license": "UNLICENSED",
+  "keywords": ["omp", "omp-extension", "azure", "advisor"],
+  "files": ["src/"],
+  "engines": { "node": ">=22" },
+  "omp": { "extensions": ["src/index.ts"] },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "deploy": "tsx deploy/cli.ts",
+    "probe": "tsx scripts/probe.ts",
+    "omp": "tsx scripts/omp.ts"
+  },
+  "dependencies": {
+    "@azure/identity": "4.13.0"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.8.7",
+    "@oh-my-pi/pi-natives": "18.8.7"
+  },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-coding-agent": { "optional": true },
+    "@oh-my-pi/pi-natives": { "optional": true }
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "18.8.7",
+    "@oh-my-pi/pi-coding-agent": "18.8.7",
+    "@oh-my-pi/pi-natives": "18.8.7",
+    "@types/node": "22.19.15",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
+  }
+}
