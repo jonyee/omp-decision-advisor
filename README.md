@@ -8,6 +8,21 @@ The extension and Azure deployment tooling live in this repository. No changes t
 
 The package declares `omp.extensions`; OMP discovers it automatically after installation. The archive contains only `src/`, `package.json` and this README. Azure Identity is the only external runtime dependency. OMP supplies its SDK and native tokenizer; optional peers pin the supported host to **18.8.7** without installing another OMP runtime.
 
+Install directly from this GitHub repository:
+
+```sh
+omp install github:jonyee/omp-decision-advisor
+```
+
+OMP's Git installer invokes external `bun install`, so Bun must be on `PATH` even when OMP itself is a standalone binary. On Nix, install without changing the host configuration:
+
+```sh
+nix shell nixpkgs#bun --command omp install github:jonyee/omp-decision-advisor
+```
+
+The installer enables the extension automatically. Start a new OMP session with the runtime Azure settings described below; installing the extension does not configure credentials or deploy Azure resources. A direct GitHub installation was verified in an isolated OMP home with live Azure scoring.
+
+
 For a local checkout:
 
 ```sh
@@ -26,7 +41,7 @@ npm install --ignore-scripts --omit=dev \
 omp install "$HOME/.local/share/omp-decision-extensions/node_modules/omp-decision-advisor"
 ```
 
-OMP 18.8.7 treats local install targets as directories to link, not tarballs. Do not pass the `.tgz` directly to `omp install`. Native TypeScript loading means no extension build step is required. The package stays private/unlicensed; packaging does not publish it or select a redistribution license.
+OMP 18.8.7 treats local install targets as directories to link, not tarballs. Do not pass the `.tgz` directly to `omp install`. Native TypeScript loading means no extension build step is required. `private: true` prevents npm-registry publication; the GitHub repository remains installable. No redistribution license has been selected.
 
 Configure `DECISION_ENDPOINT` and `DECISION_DEPLOYMENT` in your runtime environment before launching ordinary `omp`. Use `az login` and `AZURE_TOKEN_CREDENTIALS=AzureCliCredential` for local Azure CLI authentication. The repository's `npm run deploy -- plan --location eastus2 --sku DataZoneStandard --capacity 17 --print-env` prints the two account exports explicitly in a private terminal; copy only the `export` lines. Never commit the endpoint or credentials.
 
