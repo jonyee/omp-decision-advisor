@@ -6,6 +6,7 @@ export const MAX_TIMEOUT_MS = 120_000;
 export const MAX_HOST_TIMEOUT_MS = 20_000;
 
 export interface DecisionSettings extends DecisionOptions {
+  enabled: boolean;
   reviewModel: string;
   advisorTimeoutMs: number;
 }
@@ -76,8 +77,15 @@ function numberSetting(raw: Record<string, unknown>, key: string, fallback: numb
   return value;
 }
 
+function booleanSetting(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = raw[key] === undefined ? fallback : raw[key];
+  if (typeof value !== "boolean") throw new Error(`${key} must be a boolean.`);
+  return value;
+}
+
 /** Normalize persisted preferences without requiring an already configured Azure provider. */
 export function normalizeDecisionSettings(raw: Record<string, unknown>): DecisionSettings {
+  const enabled = booleanSetting(raw, "enabled", true);
   const endpointValue = stringSetting(raw, "endpoint", "");
   const deployment = stringSetting(raw, "deployment", "");
   const reviewModel = stringSetting(raw, "reviewModel", "@advisor");
@@ -94,7 +102,7 @@ export function normalizeDecisionSettings(raw: Record<string, unknown>): Decisio
   validateThreshold(passThreshold);
   validateTimeout(timeoutMs, MAX_HOST_TIMEOUT_MS, "Scoring timeout");
   validateTimeout(advisorTimeoutMs, MAX_HOST_TIMEOUT_MS, "Automatic advisor timeout");
-  return { endpoint, deployment, reviewModel, credentialMode, passThreshold, timeoutMs, advisorTimeoutMs };
+  return { enabled, endpoint, deployment, reviewModel, credentialMode, passThreshold, timeoutMs, advisorTimeoutMs };
 }
 
 export function toDecisionOptions(settings: DecisionSettings): DecisionOptions {

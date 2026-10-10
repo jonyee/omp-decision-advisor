@@ -21,6 +21,14 @@ export interface DecisionReport {
   criteria: Record<CriterionId, CriterionResult>;
   flagged: CriterionId[];
 }
+export interface DecisionSmokeResult {
+  model: string;
+  passed: boolean;
+  checks: {
+    matching: { choice: "match" | "mismatch"; probabilities: Record<"match" | "mismatch", number>; confidence: number };
+    mismatching: { choice: "match" | "mismatch"; probabilities: Record<"match" | "mismatch", number>; confidence: number };
+  };
+}
 export interface ReviewFinding {
   severity: "concern" | "blocker";
   evidence: string;

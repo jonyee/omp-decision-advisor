@@ -34,7 +34,7 @@ For an archive, run `npm pack --ignore-scripts` in the checkout, then:
 ```sh
 npm install --ignore-scripts --omit=dev \
   --prefix "$HOME/.local/share/omp-decision-extensions" \
-  /path/to/omp-decision-advisor-0.2.0.tgz
+  /path/to/omp-decision-advisor-0.3.0.tgz
 omp install "$HOME/.local/share/omp-decision-extensions/node_modules/omp-decision-advisor"
 ```
 
@@ -42,7 +42,7 @@ OMP treats local install targets as directories to link, not tarballs: install t
 
 ## Configure in OMP
 
-Run `/decision` to open the native settings UI. Use arrows and Enter to edit:
+Run `/decision` to open the control menu: **on**, **off**, **status**, and **settings**. On/off is saved per active OMP profile and applies immediately; off cancels in-flight automatic work and prevents turn scoring or advisor calls. Existing profiles remain on by default. Choose **settings** to open the preference editor below.
 
 | Preference | Purpose |
 |---|---|
@@ -59,15 +59,17 @@ Preferences live under `settings["omp-decision-advisor"]` in the active profile'
 
 No custom `DECISION_*` environment variables are read. Old shell exports can be removed. Endpoints and model choices stay in local OMP configuration, not this public repository. Tokens, API keys and passwords are never saved. API-key authentication is not supported by the verified System One contract.
 
-Deployment discovery is read-only and happens only when selected in the UI. It uses Azure CLI's active subscription and account read permissions. It never creates or changes Azure resources. Without discovery access, enter the existing account HTTPS origin and deployment manually. Do not append `/providers/microsoft/v1/systemone` to the endpoint; the client adds it.
+Deployment discovery is read-only and happens only when selected in the UI. A focused loading modal stays visible while Azure is queried; Enter and typed text cannot reach the main editor. Escape cancels the Azure CLI subprocess and returns to preferences; late results do not reopen a picker. It uses Azure CLI's active subscription and account read permissions, and never creates or changes Azure resources. Without discovery access, enter the existing account HTTPS origin and deployment manually. Do not append `/providers/microsoft/v1/systemone` to the endpoint; the client adds it.
 
 Azure CLI mode uses your existing `az login` identity without an extra credential-selection variable. DefaultAzureCredential mode supports Azure SDK's standard managed/workload/environment identity mechanisms. Inference still requires existing data-plane permissions and network access. The extension never grants roles or changes authentication/network policies.
 
 Commands:
 
-- `/decision` or `/decision configure` — edit saved preferences.
-- `/decision status` — explicitly show the latest stored scores, even when the turn passed.
-- `/decision review` — show/reuse the automatically requested review, or explicitly review a passing turn. It does not issue a duplicate review for the same captured turn.
+- `/decision` — open the on/off/status/settings control menu.
+- `/decision on` / `/decision off` — persist the automatic-review state; explicit diagnostics remain available when off.
+- `/decision settings` — edit saved provider, model, threshold, credential and timeout preferences.
+- `/decision status` — show current configuration and latest stored scores, and perform a live smoke test. It sends one batched request with a matching and mismatching synthetic reply against a supplied arithmetic reference; it never sends conversation history or invokes the advisor. A wrong classification is a failed smoke; network/authentication/malformed-response failures are errors, not passes. It works while automatic review is off, is cancellable in the TUI, and incurs one small model request when configured. An unconfigured provider is reported without making a request. This is a functional smoke, not general quality calibration.
+- `/decision review` — show/reuse the automatically requested review, or explicitly review a captured passing turn. It does not issue a duplicate review for the same captured turn.
 
 For headless administration, use OMP's existing plugin configuration CLI:
 
@@ -133,6 +135,8 @@ npm run probe -- --profile work --cwd /path/to/workspace
 The probe reads the same persisted OMP settings through its configuration CLI. The plugin must be discoverable in that profile; use `omp plugin link /path/to/omp-decision-advisor` for a local checkout. The probe supplies synthetic correct arithmetic evidence versus wrong arithmetic and fabricated tests, prints sanitized judgments only and exits nonzero unless it demonstrates discrimination. It is not general task-quality calibration.
 
 Integration verification exercised the actual native `/decision` menu, existing Azure deployment selection, advisor selection, threshold editing and Save into an isolated OMP store. Restarted headless sessions used those preferences with no custom decision environment variables: a passing turn stayed silent; a failing turn automatically invoked the advisor once without restarting the primary; scoring errors and advisor timeouts were visible. The primary/advisor smoke used deterministic local chat fixtures and live Azure Decision-1 scoring.
+
+Additional native TUI verification covered the four-action control menu, a focused loading state during delayed deployment discovery, ignored main-editor input while loading, Escape cancellation with subprocess termination, and safe manual-entry fallback on query errors. Live `/decision status` smoke passed against Azure while automatic review was off; off/on transitions survived restarts and restored automatic review only when enabled.
 
 ## Sources
 

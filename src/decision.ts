@@ -1,6 +1,6 @@
 import { AzureCliCredential, DefaultAzureCredential } from "@azure/identity";
 import { validateDecisionOptions } from "./config.js";
-import { criterionIds, verdicts, type CriterionId, type CriterionResult, type DecisionOptions, type DecisionReport, type TurnEvidence, type Verdict } from "./types.js";
+import { criterionIds, verdicts, type CriterionId, type CriterionResult, type DecisionOptions, type DecisionReport, type DecisionSmokeResult, type TurnEvidence, type Verdict } from "./types.js";
 
 export const COGNITIVE_SCOPE = "https://cognitiveservices.azure.com/.default";
 // Conservative application budget, NOT the model's tokenizer/context limit. Reserve space for the rubric.
@@ -46,6 +46,17 @@ const questions = Object.fromEntries(criterionIds.map(id => [id, {
   criteria: labels,
 }]));
 
+const smokeLabels = ["match", "mismatch"] as const;
+const smokeState = JSON.stringify({ reference: "17 + 25 = 42", responses: { matching: "42", mismatching: "99" } });
+const smokeQuestions = Object.fromEntries(["matching", "mismatching"].map(id => [id, {
+  type: "choice",
+  instructions: `Compare only responses.${id} with the reference arithmetic result in the supplied state. Choose match if the response equals that result, otherwise choose mismatch.`,
+  criteria: {
+    match: "The response equals the reference arithmetic result.",
+    mismatch: "The response does not equal the reference arithmetic result.",
+  },
+}]));
+
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -55,24 +66,34 @@ function unitProbability(value: unknown): value is number {
 function invalidResponse(): never {
   throw new DecisionError("response", "System One returned an invalid or incomplete decision report; no turn was accepted.");
 }
+function parseChoice<Label extends string>(answer: unknown, choices: readonly Label[], invalid: () => never): { choice: Label; probabilities: Record<Label, number>; confidence: number } {
+  if (!object(answer) || answer.type !== "choice" || !choices.includes(answer.choice as Label) || !object(answer.probabilities) || !unitProbability(answer.confidence)) invalid();
+  const probabilities = answer.probabilities;
+  if (Object.keys(probabilities).length !== choices.length || !choices.every(label => unitProbability(probabilities[label]))) invalid();
+  const sum = choices.reduce((total, label) => total + (probabilities[label] as number), 0);
+  const choice = answer.choice as Label;
+  if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE || choices.some(label => (probabilities[label] as number) > (probabilities[choice] as number) + 1e-6)) invalid();
+  return {
+    choice,
+    probabilities: Object.fromEntries(choices.map(label => [label, probabilities[label]])) as Record<Label, number>,
+    confidence: answer.confidence,
+  };
+}
 function parseAnswers(raw: unknown): Record<CriterionId, CriterionResult> {
   if (!object(raw) || !object(raw.answers)) invalidResponse();
   const criteria = {} as Record<CriterionId, CriterionResult>;
-  for (const id of criterionIds) {
-    const answer = raw.answers[id];
-    if (!object(answer) || answer.type !== "choice" || !verdicts.includes(answer.choice as Verdict) || !object(answer.probabilities) || !unitProbability(answer.confidence)) invalidResponse();
-    const probabilities = answer.probabilities;
-    if (Object.keys(probabilities).length !== verdicts.length || !verdicts.every(label => unitProbability(probabilities[label]))) invalidResponse();
-    const sum = verdicts.reduce((total, label) => total + (probabilities[label] as number), 0);
-    const choice = answer.choice as Verdict;
-    if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE || verdicts.some(label => (probabilities[label] as number) > (probabilities[choice] as number) + 1e-6)) invalidResponse();
-    criteria[id] = {
-      choice,
-      probabilities: Object.fromEntries(verdicts.map(label => [label, probabilities[label]])) as Record<Verdict, number>,
-      confidence: answer.confidence,
-    };
-  }
+  for (const id of criterionIds) criteria[id] = parseChoice(raw.answers[id], verdicts, invalidResponse);
   return criteria;
+}
+function invalidSmokeResponse(): never {
+  throw new DecisionError("response", "System One returned invalid or incomplete smoke checks; smoke did not pass.");
+}
+function parseSmokeAnswers(raw: unknown): DecisionSmokeResult["checks"] {
+  if (!object(raw) || !object(raw.answers)) invalidSmokeResponse();
+  return {
+    matching: parseChoice(raw.answers.matching, smokeLabels, invalidSmokeResponse),
+    mismatching: parseChoice(raw.answers.mismatching, smokeLabels, invalidSmokeResponse),
+  };
 }
 
 function abortError(timedOut: () => boolean): DecisionError {
@@ -121,6 +142,26 @@ export class AzureDecisionClient {
     if (typeof state !== "string" || !this.evidenceFits(state)) {
       throw new DecisionError("evidence", "Serialized evidence exceeds the application context budget; this turn remains unassessed. Reduce retained history or tool volume without removing current evidence.");
     }
+    const criteria = await this.request(state, questions, parseAnswers, signal);
+    return {
+      turn,
+      model: this.options.deployment,
+      evaluatedAt: new Date().toISOString(),
+      criteria,
+      flagged: criterionIds.filter(id => criteria[id].choice !== "pass" || criteria[id].probabilities.pass < this.options.passThreshold),
+    };
+  }
+
+  async smokeTest(signal?: AbortSignal): Promise<DecisionSmokeResult> {
+    const checks = await this.request(smokeState, smokeQuestions, parseSmokeAnswers, signal);
+    return {
+      model: this.options.deployment,
+      passed: checks.matching.choice === "match" && checks.mismatching.choice === "mismatch",
+      checks,
+    };
+  }
+
+  private async request<Result>(state: string, requestQuestions: Record<string, unknown>, parse: (raw: unknown) => Result, signal?: AbortSignal): Promise<Result> {
     const controller = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, this.options.timeoutMs);
@@ -141,7 +182,7 @@ export class AzureDecisionClient {
       const response = await abortable(() => this.fetch(`${this.options.endpoint}/providers/microsoft/v1/systemone`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: this.options.deployment, state, questions }),
+        body: JSON.stringify({ model: this.options.deployment, state, questions: requestQuestions }),
         signal: controller.signal,
         redirect: "error",
       }), controller.signal, aborted);
@@ -151,14 +192,7 @@ export class AzureDecisionClient {
       }
       stage = "response";
       const raw: unknown = await abortable(() => response.json(), controller.signal, aborted);
-      const criteria = parseAnswers(raw);
-      return {
-        turn,
-        model: this.options.deployment,
-        evaluatedAt: new Date().toISOString(),
-        criteria,
-        flagged: criterionIds.filter(id => criteria[id].choice !== "pass" || criteria[id].probabilities.pass < this.options.passThreshold),
-      };
+      return parse(raw);
     } catch (error) {
       if (controller.signal.aborted) throw abortError(aborted);
       if (error instanceof DecisionError) throw error;

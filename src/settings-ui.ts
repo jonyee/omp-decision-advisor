@@ -2,6 +2,8 @@ import type { ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { discoverDecisionDeployments } from "./azure-models.ts";
 import { normalizeDecisionSettings, toDecisionOptions, type DecisionSettings } from "./config.ts";
 import { loadDecisionSettings, saveDecisionSettings } from "./settings.ts";
+import { withLoading } from "./loading-ui.ts";
+
 
 async function selectScoringProvider(ctx: ExtensionCommandContext, draft: DecisionSettings): Promise<DecisionSettings | undefined> {
   const method = await ctx.ui.select("Scoring model — Microsoft-Decision-1", [
@@ -11,7 +13,8 @@ async function selectScoringProvider(ctx: ExtensionCommandContext, draft: Decisi
   if (method === undefined) return undefined;
   if (method === "Choose existing Azure deployment") {
     try {
-      const deployments = await discoverDecisionDeployments();
+      const deployments = await withLoading(ctx, "Loading Azure deployments…", signal => discoverDecisionDeployments(undefined, signal));
+      if (deployments === undefined) return undefined;
       if (deployments.length) {
         const rows = deployments.map((deployment, index) => ({
           label: `${index + 1}. ${deployment.model}${deployment.version ? ` ${deployment.version}` : ""} · ${deployment.location} · ${deployment.deployment}`,

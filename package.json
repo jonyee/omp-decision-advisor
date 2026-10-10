@@ -1,6 +1,6 @@
 {
   "name": "omp-decision-advisor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Silent per-turn Azure Decision-1 triage with automatic OMP advisor review and native settings",
@@ -11,6 +11,7 @@
   "omp": {
     "extensions": ["src/index.ts"],
     "settings": {
+      "enabled": { "type": "boolean", "default": true, "description": "Enable automatic decision scoring and advisor review; explicit status smoke tests remain available when off." },
       "endpoint": { "type": "string", "default": "", "description": "Existing Azure AIServices account HTTPS origin; no credentials, paths, query or fragment." },
       "deployment": { "type": "string", "default": "", "description": "Existing healthy Microsoft-Decision-1 deployment name." },
       "reviewModel": { "type": "string", "default": "@advisor", "description": "OMP advisor role or explicit provider/model selector for failure review." },
@@ -32,16 +33,19 @@
   },
   "peerDependencies": {
     "@oh-my-pi/pi-coding-agent": "18.8.7",
-    "@oh-my-pi/pi-natives": "18.8.7"
+    "@oh-my-pi/pi-natives": "18.8.7",
+    "@oh-my-pi/pi-tui": "18.8.7"
   },
   "peerDependenciesMeta": {
     "@oh-my-pi/pi-coding-agent": { "optional": true },
-    "@oh-my-pi/pi-natives": { "optional": true }
+    "@oh-my-pi/pi-natives": { "optional": true },
+    "@oh-my-pi/pi-tui": { "optional": true }
   },
   "devDependencies": {
     "@oh-my-pi/pi-ai": "18.8.7",
     "@oh-my-pi/pi-coding-agent": "18.8.7",
     "@oh-my-pi/pi-natives": "18.8.7",
+    "@oh-my-pi/pi-tui": "18.8.7",
     "@types/node": "22.19.15",
     "tsx": "4.21.0",
     "typescript": "5.9.3"

@@ -6,8 +6,9 @@ import { toDecisionOptions, type DecisionSettings } from "./config.ts";
 import { buildEvidence } from "./evidence.ts";
 import { reviewTurn } from "./review.ts";
 import { criterionIds, type DecisionReport, type ReviewResult, type TurnEvidence } from "./types.ts";
-import { loadDecisionSettings } from "./settings.ts";
+import { loadDecisionSettings, saveDecisionSettings } from "./settings.ts";
 import { configureDecision } from "./settings-ui.ts";
+import { showDecisionStatus } from "./status-ui.ts";
 
 interface ReviewedTurn {
   evidence: TurnEvidence;
@@ -111,11 +112,14 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     configuration = undefined;
     client = undefined;
     configurationError = undefined;
+    let enabled = true;
     try {
       obfuscator = await buildSecretObfuscator(ctx.cwd, getAgentDir());
-      applySettings(await loadDecisionSettings(ctx.cwd));
+      const settings = await loadDecisionSettings(ctx.cwd);
+      enabled = settings.enabled;
+      applySettings(settings);
     } catch { configurationError = "Decision settings could not be loaded. Open /decision to configure them."; }
-    if (configurationError) ctx.ui.notify(configurationError, "warning");
+    if (configurationError && enabled) ctx.ui.notify(configurationError, "warning");
   };
   pi.setLabel("Decision advisor");
   pi.registerMessageRenderer("decision-feedback", message => new Markdown(String(message.content), 0, 0, getMarkdownTheme()));
@@ -127,7 +131,7 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
   pi.on("session_shutdown", reset);
   pi.on("context", event => ({ messages: event.messages.filter(message => !(message.role === "custom" && message.customType === "decision-feedback")) }));
   pi.on("assistant_message", (_event, ctx) => {
-    if (ctx.agent.kind !== "main") return;
+    if (ctx.agent.kind !== "main" || !configuration?.enabled) return;
     // This hook is awaited before dispatch; turn_end observers may arrive after session_stop.
     const ticket = new Promise<void>(resolve => finishTurns.push(resolve));
     finalized.add(ticket);
@@ -140,7 +144,7 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     if (ctx.agent.kind === "main") await Promise.allSettled([...reviews]);
   });
   pi.on("turn_end", (event, ctx) => {
-    if (ctx.agent.kind !== "main") return;
+    if (ctx.agent.kind !== "main" || !configuration?.enabled) return;
     const finishTurn = finishTurns.shift();
     const signal = controller.signal;
     const currentTurn = ++turn;
@@ -190,23 +194,46 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     pi.sendMessage({ customType: "decision-feedback", content, display: true }, { triggerTurn: false });
   });
   pi.registerCommand("decision", {
-    description: "Configure decision scoring and advisor review; /decision status shows stored scores",
+    description: "Decision controls: on, off, status (live smoke), settings, or review",
     handler: async (args, ctx) => {
-      if (!args.trim() || args.trim() === "configure") {
+      let action = args.trim();
+      if (!action) {
+        if (ctx.mode !== "tui" && ctx.mode !== "rpc") { ctx.ui.notify("Use /decision on, off, status, settings or review.", "warning"); return; }
+        const choice = await ctx.ui.select(`Decision advisor — automatic review ${configuration?.enabled ? "on" : "off"}`, [
+          { label: "on", description: "Enable automatic turn scoring and failure review; save to this OMP profile." },
+          { label: "off", description: "Disable automatic scoring and advisor calls; explicit status smoke remains available." },
+          { label: "status", description: "Show configuration and stored scores, and run one Decision-model smoke request." },
+          { label: "settings", description: "Choose scoring deployment, advisor model, threshold, credentials and timeouts." },
+        ]);
+        if (!choice) return;
+        action = choice;
+      }
+      if (action === "on" || action === "off") {
+        const current = configuration ?? await loadDecisionSettings(ctx.cwd);
+        const requested = action === "on";
+        const saved = await saveDecisionSettings(ctx.cwd, { ...current, enabled: requested });
+        applySettings(saved);
+        const message = `Automatic Decision review is ${saved.enabled ? "on" : "off"}.${saved.enabled !== requested ? " A project override takes precedence." : ""}${saved.enabled && configurationError ? " Choose a scoring model in /decision settings." : ""}`;
+        if (ctx.mode === "print" || ctx.mode === "json") console.log(JSON.stringify({ type: "decision_enabled", enabled: saved.enabled }));
+        else ctx.ui.notify(message, saved.enabled !== requested || (saved.enabled && configurationError) ? "warning" : "info");
+        return;
+      }
+      if (action === "settings") {
         const saved = await configureDecision(ctx);
         if (saved) applySettings(saved);
         return;
       }
-      if (!last) { ctx.ui.notify("No turn evidence captured in this session yet.", "warning"); return; }
-      if (args.trim() === "status") {
-        pi.sendMessage({ customType: "decision-feedback", content: last.report ? formatReport(last.report) : "Latest turn was not evaluated; an automatic advisor review was requested.", display: true }, { triggerTurn: false });
+      if (action === "status") {
+        await showDecisionStatus(ctx, configuration ?? await loadDecisionSettings(ctx.cwd), last, controller.signal);
         return;
       }
-      if (args.trim() !== "review") { ctx.ui.notify("Use /decision, /decision status or /decision review.", "warning"); return; }
+      if (action !== "review") { ctx.ui.notify("Use /decision on, off, status, settings or review.", "warning"); return; }
+      if (!last) { ctx.ui.notify("No turn evidence captured in this session yet.", "warning"); return; }
       const captured = last;
       if (captured.review) {
         await captured.review;
         if (captured.result) pi.sendMessage({ customType: "decision-feedback", content: `### Advisor review — turn ${captured.turn}\n${JSON.stringify(captured.result, null, 2)}`, display: true }, { triggerTurn: false });
+        else ctx.ui.notify("The advisor review did not complete. Inspect the advisor model and timeout in /decision settings.", "warning");
       } else await startReview(captured, ctx, false);
     },
   });

@@ -5,6 +5,7 @@ import type { AzureRunner } from "../src/azure-cli.js";
 import { normalizeDecisionSettings, toDecisionOptions, type DecisionSettings } from "../src/config.js";
 
 const configured: DecisionSettings = {
+  enabled: true,
   endpoint: "https://example.invalid",
   deployment: "chosen-decision",
   reviewModel: "provider/chosen-advisor",
@@ -23,6 +24,34 @@ test("unconfigured preferences are readable but cannot create scoring options", 
   const selected = toDecisionOptions(normalizeDecisionSettings({ ...configured }));
   assert.equal(selected.endpoint, configured.endpoint);
   assert.equal(selected.deployment, configured.deployment);
+});
+
+test("missing enabled preferences retain automatic review for existing profiles", () => {
+  const { enabled: _enabled, ...existing } = configured;
+  assert.equal(normalizeDecisionSettings(existing).enabled, true);
+  assert.equal(normalizeDecisionSettings({}).enabled, true);
+});
+
+test("disabled automatic review persists while changing threshold and advisor model", () => {
+  const disabled = normalizeDecisionSettings({ ...configured, enabled: false });
+  const restored = normalizeDecisionSettings(JSON.parse(JSON.stringify(disabled)));
+  const tuned = normalizeDecisionSettings({ ...restored, passThreshold: 0.55 });
+  const selected = normalizeDecisionSettings({ ...tuned, reviewModel: "provider/alternate-advisor" });
+  for (const settings of [disabled, restored, tuned, selected]) {
+    assert.equal(settings.enabled, false);
+    assert.equal(Object.hasOwn(toDecisionOptions(settings), "enabled"), false);
+    assert.equal(settings.enabled, false);
+  }
+  assert.equal(selected.passThreshold, 0.55);
+  assert.equal(selected.reviewModel, "provider/alternate-advisor");
+  assert.equal(toDecisionOptions(selected).deployment, configured.deployment);
+  assert.equal(toDecisionOptions(selected).credentialMode, configured.credentialMode);
+});
+
+test("enabled preferences reject non-boolean stored values", () => {
+  for (const enabled of ["true", "false", "", 0, 1, null, [], {}]) {
+    assert.throws(() => normalizeDecisionSettings({ ...configured, enabled }), /enabled must be a boolean/);
+  }
 });
 
 test("changing triage tuning preserves explicit advisor and Azure identity choices", () => {
@@ -118,4 +147,37 @@ test("denied Azure discovery explains the manual configuration alternative witho
     assert.equal(error.message.includes("private-fixture-marker"), false);
     return true;
   });
+});
+
+test("cancelled discovery does not begin cloud access", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let calls = 0;
+  const run: AzureRunner = async <T>(): Promise<T> => { calls++; throw new Error("Unexpected cloud access"); };
+  await assert.rejects(discoverDecisionDeployments(run, controller.signal), { name: "AbortError" });
+  assert.equal(calls, 0);
+});
+
+test("cancellation during an account read never becomes a partial deployment list", async () => {
+  const controller = new AbortController();
+  const visited: string[] = [];
+  const run: AzureRunner = async <T>(args: string[]): Promise<T> => {
+    if (args[0] === "account") return { id: "subscription-fixture", state: "Enabled" } as T;
+    if (args[2] === "list") return ["first", "second"].map(name => ({ name, resourceGroup: "group-fixture", location: "region-fixture", kind: "AIServices", properties: { provisioningState: "Succeeded", endpoint: configured.endpoint } })) as T;
+    visited.push(args[args.indexOf("--name") + 1]!);
+    controller.abort();
+    throw new Error("Aborted cloud read");
+  };
+  await assert.rejects(discoverDecisionDeployments(run, controller.signal), { name: "AbortError" });
+  assert.deepEqual(visited, ["first"]);
+});
+
+test("cancellation while listing accounts does not report no deployments", async () => {
+  const controller = new AbortController();
+  const run: AzureRunner = async <T>(args: string[]): Promise<T> => {
+    if (args[0] === "account") return { id: "subscription-fixture", state: "Enabled" } as T;
+    controller.abort();
+    return [] as T;
+  };
+  await assert.rejects(discoverDecisionDeployments(run, controller.signal), { name: "AbortError" });
 });
