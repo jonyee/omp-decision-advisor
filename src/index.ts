@@ -1,3 +1,4 @@
+import { countTokens, Encoding } from "@oh-my-pi/pi-natives";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { buildSecretObfuscator, type SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AzureDecisionClient, DecisionError } from "./decision.ts";
@@ -61,7 +62,7 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     client = undefined;
     configurationError = undefined;
     try {
-      client = new AzureDecisionClient(toDecisionOptions(settings));
+      client = new AzureDecisionClient(toDecisionOptions(settings), { evidenceFits: state => countTokens(state, Encoding.Qwen3) <= 28_000 });
     } catch { configurationError = "Decision scoring is not configured. Run /decision to choose the deployment."; }
   };
   const showFeedback = (text: string, ctx: ExtensionContext, record: object) => {

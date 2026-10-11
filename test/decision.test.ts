@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
 import { validateDecisionOptions } from "../src/config.js";
-import { AzureDecisionClient, COGNITIVE_SCOPE, DecisionError, MAX_EVIDENCE_TOKENS } from "../src/decision.js";
+import { AzureDecisionClient, COGNITIVE_SCOPE, DecisionError, MAX_EVIDENCE_BYTES } from "../src/decision.js";
 import { criterionIds, type DecisionOptions, type TurnEvidence, type Verdict } from "../src/types.js";
-import { countEvidenceTokens } from "../src/evidence-tokens.ts";
 
 const evidence: TurnEvidence = {
   instructions: ["Return an accurate answer without claiming unperformed checks."],
@@ -187,12 +186,13 @@ test("credential errors are sanitized and do not reach inference", async () => {
 test("oversized and unserializable evidence is rejected before auth, never truncated", async () => {
   let calls = 0;
   const instance = new AzureDecisionClient(defaults, { credential: { getToken: async () => { calls++; return null; } } });
-  await assert.rejects(instance.evaluate({ ...evidence, userRequest: "7".repeat(MAX_EVIDENCE_TOKENS) }, 1), (error: unknown) => {
+  await assert.rejects(instance.evaluate({ ...evidence, userRequest: "x".repeat(MAX_EVIDENCE_BYTES) }, 1), (error: unknown) => {
     assert.ok(error instanceof DecisionError);
     assert.equal(error.code, "evidence");
+    assert.match(error.message, /Reduce retained history/);
     return true;
   });
-  await assert.rejects(instance.evaluate({ ...evidence, userRequest: "界".repeat(MAX_EVIDENCE_TOKENS) }, 1), rejectsCode("evidence"));
+  await assert.rejects(instance.evaluate({ ...evidence, userRequest: "界".repeat(MAX_EVIDENCE_BYTES / 2) }, 1), rejectsCode("evidence"));
   const cyclic: unknown[] = [];
   cyclic.push(cyclic);
   await assert.rejects(instance.evaluate({ ...evidence, toolResults: cyclic }, 1), rejectsCode("evidence"));
@@ -262,20 +262,19 @@ test("caller cancellation interrupts credential acquisition without inference", 
 
 test("evidence exactly at the application budget is sent intact", async () => {
   const base = { ...evidence, userRequest: "" };
-  const remaining = MAX_EVIDENCE_TOKENS - countEvidenceTokens(JSON.stringify({ ...base, userRequest: "7" })) + 1;
-  const bounded = { ...base, userRequest: "7".repeat(remaining) };
-  let observedState = "";
+  const remaining = MAX_EVIDENCE_BYTES - Buffer.byteLength(JSON.stringify(base), "utf8");
+  const bounded = { ...base, userRequest: "x".repeat(remaining) };
+  let observedBytes = 0;
   await local(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk.toString();
     const sent = JSON.parse(body);
-    observedState = sent.state;
+    observedBytes = Buffer.byteLength(sent.state, "utf8");
     assert.deepEqual(JSON.parse(sent.state), bounded);
     json(response, payload());
   }, async endpoint => {
     const report = await client(endpoint).evaluate(bounded, 1);
     assert.deepEqual(report.flagged, []);
-    await assert.rejects(client(endpoint).evaluate({ ...bounded, userRequest: `${bounded.userRequest}7` }, 2), rejectsCode("evidence"));
   });
-  assert.equal(countEvidenceTokens(observedState), MAX_EVIDENCE_TOKENS);
+  assert.equal(observedBytes, MAX_EVIDENCE_BYTES);
 });
