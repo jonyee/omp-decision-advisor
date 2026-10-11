@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
 import { validateDecisionOptions } from "../src/config.js";
-import { AzureDecisionClient, COGNITIVE_SCOPE, CurrentEvidenceOverflowError, DecisionError, MAX_EVIDENCE_TOKENS } from "../src/decision.js";
+import { AzureDecisionClient, COGNITIVE_SCOPE, CurrentEvidenceOverflowError, DecisionError, MAX_EVIDENCE_BYTES } from "../src/decision.js";
 import { criterionIds, type DecisionOptions, type TurnEvidence, type Verdict } from "../src/types.js";
-import { countEvidenceTokens } from "../src/evidence-tokens.ts";
+const countEvidenceBytes = (state: string) => Buffer.byteLength(state, "utf8");
 
 const evidence: TurnEvidence = {
   instructions: ["Return an accurate answer without claiming unperformed checks."],
@@ -14,6 +14,7 @@ const evidence: TurnEvidence = {
   toolResults: [],
 };
 const defaults: DecisionOptions = { endpoint: "https://example.invalid", deployment: "test-decision", passThreshold: 0.8, timeoutMs: 1_000, credentialMode: "azure-cli" };
+const evidenceBudget = { count: countEvidenceBytes, max: MAX_EVIDENCE_BYTES, unit: "bytes" as const };
 const credential = { getToken: async () => ({ token: "isolated-test-token" }) };
 function answer(choice: Verdict = "pass", probability = 0.97) {
   return {
@@ -41,7 +42,7 @@ async function local(handler: (request: IncomingMessage, response: ServerRespons
   }
 }
 function client(endpoint: string, options: Partial<DecisionOptions> = {}) {
-  return new AzureDecisionClient({ ...defaults, ...options, endpoint }, { credential, allowTestLoopback: true });
+  return new AzureDecisionClient({ ...defaults, ...options, endpoint }, { credential, allowTestLoopback: true, evidenceBudget });
 }
 function rejectsCode(code: string) {
   return (error: unknown) => error instanceof DecisionError && error.code === code;
@@ -188,16 +189,17 @@ test("current-only overflow and serialization errors are distinct and rejected b
   let credentialCalls = 0;
   let fetchCalls = 0;
   const instance = new AzureDecisionClient(defaults, {
+    evidenceBudget,
     credential: { getToken: async () => { credentialCalls++; return null; } },
     fetch: async () => { fetchCalls++; return new Response(JSON.stringify(payload())); },
   });
-  for (const userRequest of ["7".repeat(MAX_EVIDENCE_TOKENS), "界".repeat(MAX_EVIDENCE_TOKENS)]) {
+  for (const userRequest of ["7".repeat(MAX_EVIDENCE_BYTES), "界".repeat(MAX_EVIDENCE_BYTES)]) {
     const oversized = { ...evidence, userRequest };
     await assert.rejects(instance.evaluate(oversized, 1), (error: unknown) => {
       assert.ok(error instanceof CurrentEvidenceOverflowError);
       assert.equal(error.code, "evidence_current_overflow");
-      assert.equal(error.currentTokens, countEvidenceTokens(JSON.stringify(oversized)));
-      assert.equal(error.maxTokens, MAX_EVIDENCE_TOKENS);
+      assert.equal(error.currentCount, countEvidenceBytes(JSON.stringify(oversized)));
+      assert.equal(error.budget.max, MAX_EVIDENCE_BYTES);
       assert.equal(error.message.includes(userRequest), false);
       return true;
     });
@@ -279,7 +281,7 @@ test("caller cancellation interrupts credential acquisition without inference", 
 
 test("evidence exactly at the application budget is sent intact", async () => {
   const base = { ...evidence, userRequest: "" };
-  const remaining = MAX_EVIDENCE_TOKENS - countEvidenceTokens(JSON.stringify({ ...base, userRequest: "7" })) + 1;
+  const remaining = MAX_EVIDENCE_BYTES - countEvidenceBytes(JSON.stringify({ ...base, userRequest: "7" })) + 1;
   const bounded = { ...base, userRequest: "7".repeat(remaining) };
   let observedState = "";
   await local(async (request, response) => {
@@ -294,11 +296,11 @@ test("evidence exactly at the application budget is sent intact", async () => {
     assert.deepEqual(report.flagged, []);
     await assert.rejects(client(endpoint).evaluate({ ...bounded, userRequest: `${bounded.userRequest}7` }, 2), rejectsCode("evidence_current_overflow"));
   });
-  assert.equal(countEvidenceTokens(observedState), MAX_EVIDENCE_TOKENS);
+  assert.equal(countEvidenceBytes(observedState), MAX_EVIDENCE_BYTES);
 });
 
 test("standalone scoring sends bounded newest history without removing current fields", async () => {
-  const older = { role: "assistant", content: "7".repeat(MAX_EVIDENCE_TOKENS) };
+  const older = { role: "assistant", content: "7".repeat(MAX_EVIDENCE_BYTES) };
   const newer = { role: "user", content: "Use the latest output." };
   const original = { ...evidence, recentHistory: [older, newer] };
   let observedState = "";
@@ -311,6 +313,6 @@ test("standalone scoring sends bounded newest history without removing current f
   }, async endpoint => {
     await client(endpoint).evaluate(original, 1);
   });
-  assert.ok(countEvidenceTokens(observedState) <= MAX_EVIDENCE_TOKENS);
+  assert.ok(countEvidenceBytes(observedState) <= MAX_EVIDENCE_BYTES);
   assert.deepEqual(original.recentHistory, [older, newer]);
 });

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
-import { Tokenizer } from "@huggingface/tokenizers";
+import { countTokens, Encoding } from "@oh-my-pi/pi-natives";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { buildEvidence, textEvidence } from "../src/evidence.ts";
 import { CurrentEvidenceOverflowError, DecisionError, MAX_EVIDENCE_TOKENS, packEvidence } from "../src/decision.ts";
 import { countEvidenceTokens } from "../src/evidence-tokens.ts";
 import type { TurnEvidence } from "../src/types.ts";
+
+const tokenBudget = { count: countEvidenceTokens, max: MAX_EVIDENCE_TOKENS, unit: "tokens" as const };
+const pack = (evidence: TurnEvidence) => packEvidence(evidence, tokenBudget);
 
 const core: TurnEvidence = {
   instructions: ["Preserve current evidence and assess only supported claims."],
@@ -100,11 +101,11 @@ test("packing favors newer complete messages and retains chronological order", (
   const newer = { role: "assistant", content: "8".repeat(16_000) };
   const newest = { role: "user", content: "Latest historical detail" };
   const evidence = { ...core, recentHistory: [oldest, oversized, newer, newest] };
-  const packed = packEvidence(evidence);
+  const packed = pack(evidence);
   assert.deepEqual(packed.evidence.recentHistory, [newer, newest]);
   assert.equal(packed.removedHistoryMessages, 2);
-  assert.equal(packed.tokens, countEvidenceTokens(packed.state));
-  assert.ok(packed.tokens <= MAX_EVIDENCE_TOKENS);
+  assert.equal(packed.count, countEvidenceTokens(packed.state));
+  assert.ok(packed.count <= MAX_EVIDENCE_TOKENS);
   assertCurrentUnchanged(packed.evidence, evidence);
   assert.deepEqual(evidence.recentHistory, [oldest, oversized, newer, newest]);
 });
@@ -112,7 +113,7 @@ test("packing favors newer complete messages and retains chronological order", (
 test("an oversized newest historical message does not exclude older messages that fit", () => {
   const older = { role: "user", content: "Relevant earlier request" };
   const newest = { role: "assistant", content: "7".repeat(MAX_EVIDENCE_TOKENS) };
-  const packed = packEvidence({ ...core, recentHistory: [older, newest] });
+  const packed = pack({ ...core, recentHistory: [older, newest] });
   assert.deepEqual(packed.evidence.recentHistory, [older]);
   assert.equal(packed.removedHistoryMessages, 1);
 });
@@ -122,15 +123,15 @@ test("packing measures the whole serialized evidence and accepts the exact token
   const remaining = MAX_EVIDENCE_TOKENS - countEvidenceTokens(JSON.stringify({ ...core, recentHistory: [sample] })) + 1;
   const boundary = { ...sample, content: "7".repeat(remaining) };
   const evidence = { ...core, recentHistory: [boundary] };
-  const intact = packEvidence(evidence);
-  assert.equal(intact.tokens, MAX_EVIDENCE_TOKENS);
+  const intact = pack(evidence);
+  assert.equal(intact.count, MAX_EVIDENCE_TOKENS);
   assert.strictEqual(intact.evidence, evidence);
   assert.equal(intact.state, JSON.stringify(evidence));
   assert.equal(intact.removedHistoryMessages, 0);
   const older = { role: "user", content: "Older" };
   const oversized = { ...core, recentHistory: [older, boundary] };
-  const packed = packEvidence(oversized);
-  assert.equal(packed.tokens, MAX_EVIDENCE_TOKENS);
+  const packed = pack(oversized);
+  assert.equal(packed.count, MAX_EVIDENCE_TOKENS);
   assert.deepEqual(packed.evidence.recentHistory, [boundary]);
   assert.equal(packed.removedHistoryMessages, 1);
   assertCurrentUnchanged(packed.evidence, oversized);
@@ -141,11 +142,11 @@ test("an old duplicate payload is discarded without truncating its current count
   const older = { ...current, toolCallId: "older" };
   const evidence = { ...core, recentHistory: [older], toolResults: [current] };
   assert.ok(countEvidenceTokens(JSON.stringify(evidence)) > MAX_EVIDENCE_TOKENS);
-  const packed = packEvidence(evidence);
+  const packed = pack(evidence);
   assert.deepEqual(packed.evidence.recentHistory, []);
   assertCurrentUnchanged(packed.evidence, evidence);
   assert.deepEqual(JSON.parse(packed.state), { ...evidence, recentHistory: [] });
-  assert.ok(packed.tokens <= MAX_EVIDENCE_TOKENS);
+  assert.ok(packed.count <= MAX_EVIDENCE_TOKENS);
 });
 
 for (const recentHistory of [[], [{ role: "user", content: "Older" }]]) {
@@ -153,7 +154,7 @@ for (const recentHistory of [[], [{ role: "user", content: "Older" }]]) {
     const evidence = { ...core, recentHistory, toolResults: [{ content: "7".repeat(MAX_EVIDENCE_TOKENS), marker: "private-current-marker" }] };
     const snapshot = structuredClone(evidence);
     const expectedTokens = countEvidenceTokens(JSON.stringify({ ...evidence, recentHistory: [] }));
-    assert.throws(() => packEvidence(evidence), (error: unknown) => {
+    assert.throws(() => pack(evidence), (error: unknown) => {
       assert.ok(error instanceof CurrentEvidenceOverflowError);
       assert.equal(error.currentTokens, expectedTokens);
       assert.equal(error.maxTokens, MAX_EVIDENCE_TOKENS);
@@ -175,7 +176,7 @@ test("serialization failures remain failures even in history that would otherwis
     { ...core, recentHistory: [{ toJSON() { throw new Error("private-serialization-marker"); } }] },
     { ...core, toJSON() { return undefined; } },
   ]) {
-    assert.throws(() => packEvidence(evidence), (error: unknown) => {
+    assert.throws(() => pack(evidence), (error: unknown) => {
       assert.ok(error instanceof DecisionError);
       assert.equal(error.code, "evidence_serialization");
       assert.equal(error.message.includes("private-serialization-marker"), false);
@@ -184,9 +185,7 @@ test("serialization failures remain failures even in history that would otherwis
   }
 });
 
-test("cached piece counting equals the complete pinned tokenizer for JSON, Unicode and added tokens", () => {
-  const config = JSON.parse(gunzipSync(readFileSync(new URL("../src/qwen35-tokenizer.json.gz", import.meta.url))).toString("utf8"));
-  const tokenizer = new Tokenizer(config, {});
+test("cached state counting equals the complete host tokenizer for JSON, Unicode and special tokens", () => {
   const samples = [
     "", "Hello, world! We're checking John's output.\r\n  next\tline   ",
     "界你好 日本語 한국어 العربية हिन्दी é e\u0301 👩🏽‍💻 🧪",
@@ -195,24 +194,32 @@ test("cached piece counting equals the complete pinned tokenizer for JSON, Unico
     JSON.stringify(core),
     JSON.stringify({ content: "\\n\n\t\"quote\" \\path", unicode: "e\u0301\u0000\ud800", number: 12345 }),
     JSON.stringify({ ...core, recentHistory: [{ role: "assistant", content: "Repeated core words 界".repeat(500) }] }),
-    ...config.added_tokens.map((token: { content: string }) => `Before ${token.content}  after 界`),
+    ...["<|im_start|>", "<|im_end|>", "<|endoftext|>"].map(token => `Before ${token}  after 界`),
   ];
   // Second pass exercises cache hits rather than only initial encoding.
   for (let pass = 0; pass < 2; pass++) {
     for (const sample of samples) {
-      const expected = tokenizer.tokenize(sample, { add_special_tokens: false }).length;
+      const expected = countTokens(sample, Encoding.Qwen3);
       assert.equal(countEvidenceTokens(sample), expected);
-      assert.equal(countEvidenceTokens(sample, expected), expected);
-      if (expected) assert.ok(countEvidenceTokens(sample, expected - 1) > expected - 1);
     }
   }
 });
 
-test("early overflow counts are not cached as complete token measurements", () => {
-  const sample = JSON.stringify({ content: "Unique uncached sequence 7391264.".repeat(500) });
-  const partial = countEvidenceTokens(sample, 100);
-  assert.ok(partial > 100);
-  const complete = countEvidenceTokens(sample);
-  assert.ok(complete > partial);
-  assert.equal(countEvidenceTokens(sample, 100), complete);
+test("large uncached states retain complete host-tokenizer measurements", () => {
+  const sample = JSON.stringify({ content: "Unique uncached sequence 7391264.".repeat(6000) });
+  const expected = countTokens(sample, Encoding.Qwen3);
+  assert.equal(countEvidenceTokens(sample), expected);
+  assert.equal(countEvidenceTokens(sample), expected);
+});
+
+test("standalone packing defaults to bytes and reports byte overflow without token counts", () => {
+  const evidence = { ...core, userRequest: "界".repeat(28_000) };
+  assert.throws(() => packEvidence(evidence), (error: unknown) => {
+    assert.ok(error instanceof CurrentEvidenceOverflowError);
+    assert.equal(error.budget.unit, "bytes");
+    assert.equal(error.currentCount, Buffer.byteLength(JSON.stringify(evidence), "utf8"));
+    assert.equal(error.currentTokens, undefined);
+    assert.match(error.message, /bytes/);
+    return true;
+  });
 });

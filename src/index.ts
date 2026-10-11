@@ -1,8 +1,11 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { buildSecretObfuscator, type SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
-import { AzureDecisionClient, CurrentEvidenceOverflowError, DecisionError, packEvidence } from "./decision.ts";
+import { AzureDecisionClient, CurrentEvidenceOverflowError, DecisionError, MAX_EVIDENCE_TOKENS, packEvidence } from "./decision.ts";
 import { toDecisionOptions, type DecisionSettings } from "./config.ts";
 import { buildEvidence } from "./evidence.ts";
+import { countEvidenceTokens } from "./evidence-tokens.ts";
+
+const evidenceBudget = { count: countEvidenceTokens, max: MAX_EVIDENCE_TOKENS, unit: "tokens" as const };
 import { reviewTurn } from "./review.ts";
 import { ReviewerConfigurationError, ReviewerError, waitForReviews, type ReviewerErrorCode } from "./review-lifecycle.ts";
 import { criterionIds, type DecisionReport, type ReviewResult, type TurnEvidence } from "./types.ts";
@@ -63,7 +66,7 @@ export default function decisionAdvisor(pi: ExtensionAPI, options: { reviewWaitM
     client = undefined;
     configurationError = undefined;
     try {
-      client = new AzureDecisionClient(toDecisionOptions(settings));
+      client = new AzureDecisionClient(toDecisionOptions(settings), { evidenceBudget });
     } catch { configurationError = "Decision scoring is not configured. Run /decision to choose the deployment."; }
   };
   const showFeedback = (text: string, ctx: ExtensionContext, record: object) => {
@@ -183,7 +186,7 @@ export default function decisionAdvisor(pi: ExtensionAPI, options: { reviewWaitM
       let report: DecisionReport | undefined;
       let failure: { reason: string; detail?: string } | undefined;
       try {
-        captured.evidence = packEvidence(captured.evidence).evidence;
+        captured.evidence = packEvidence(captured.evidence, evidenceBudget).evidence;
         if (!client) throw new Error(configurationError ?? "Decision client is not configured.");
         const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
         report = await client.evaluate(captured.evidence, currentTurn, boundedSignal);

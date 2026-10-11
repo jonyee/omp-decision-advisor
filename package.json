@@ -27,14 +27,15 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
+    "test": "npm run test:node && npm run test:host",
+    "test:node": "tsx --test test/decision.test.ts test/deploy.test.ts test/review-history.test.ts test/review.test.ts test/settings.test.ts test/smoke.test.ts",
+    "test:host": "bun test test/evidence.test.ts",
     "deploy": "tsx deploy/cli.ts",
     "probe": "tsx scripts/probe.ts",
     "omp": "tsx scripts/omp.ts"
   },
   "dependencies": {
-    "@azure/identity": "4.13.0",
-    "@huggingface/tokenizers": "0.2.0"
+    "@azure/identity": "4.13.0"
   },
   "peerDependencies": {
     "@oh-my-pi/pi-coding-agent": "18.8.7",
