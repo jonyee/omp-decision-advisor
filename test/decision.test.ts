@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
 import { validateDecisionOptions } from "../src/config.js";
-import { AzureDecisionClient, COGNITIVE_SCOPE, DecisionError, MAX_EVIDENCE_TOKENS } from "../src/decision.js";
+import { AzureDecisionClient, COGNITIVE_SCOPE, CurrentEvidenceOverflowError, DecisionError, MAX_EVIDENCE_TOKENS } from "../src/decision.js";
 import { criterionIds, type DecisionOptions, type TurnEvidence, type Verdict } from "../src/types.js";
 import { countEvidenceTokens } from "../src/evidence-tokens.ts";
 
@@ -184,20 +184,37 @@ test("credential errors are sanitized and do not reach inference", async () => {
   }
 });
 
-test("oversized and unserializable evidence is rejected before auth, never truncated", async () => {
-  let calls = 0;
-  const instance = new AzureDecisionClient(defaults, { credential: { getToken: async () => { calls++; return null; } } });
-  await assert.rejects(instance.evaluate({ ...evidence, userRequest: "7".repeat(MAX_EVIDENCE_TOKENS) }, 1), (error: unknown) => {
-    assert.ok(error instanceof DecisionError);
-    assert.equal(error.code, "evidence");
-    return true;
+test("current-only overflow and serialization errors are distinct and rejected before auth or network", async () => {
+  let credentialCalls = 0;
+  let fetchCalls = 0;
+  const instance = new AzureDecisionClient(defaults, {
+    credential: { getToken: async () => { credentialCalls++; return null; } },
+    fetch: async () => { fetchCalls++; return new Response(JSON.stringify(payload())); },
   });
-  await assert.rejects(instance.evaluate({ ...evidence, userRequest: "界".repeat(MAX_EVIDENCE_TOKENS) }, 1), rejectsCode("evidence"));
+  for (const userRequest of ["7".repeat(MAX_EVIDENCE_TOKENS), "界".repeat(MAX_EVIDENCE_TOKENS)]) {
+    const oversized = { ...evidence, userRequest };
+    await assert.rejects(instance.evaluate(oversized, 1), (error: unknown) => {
+      assert.ok(error instanceof CurrentEvidenceOverflowError);
+      assert.equal(error.code, "evidence_current_overflow");
+      assert.equal(error.currentTokens, countEvidenceTokens(JSON.stringify(oversized)));
+      assert.equal(error.maxTokens, MAX_EVIDENCE_TOKENS);
+      assert.equal(error.message.includes(userRequest), false);
+      return true;
+    });
+  }
   const cyclic: unknown[] = [];
   cyclic.push(cyclic);
-  await assert.rejects(instance.evaluate({ ...evidence, toolResults: cyclic }, 1), rejectsCode("evidence"));
+  for (const invalid of [{ ...evidence, toolResults: cyclic }, { ...evidence, recentHistory: cyclic }, { ...evidence, assistant: { toJSON() { throw new Error("private-serialization-marker"); } } }]) {
+    await assert.rejects(instance.evaluate(invalid, 1), (error: unknown) => {
+      assert.ok(error instanceof DecisionError);
+      assert.equal(error.code, "evidence_serialization");
+      assert.equal(error.message.includes("private-serialization-marker"), false);
+      return true;
+    });
+  }
   await assert.rejects(instance.evaluate(evidence, 0), rejectsCode("evidence"));
-  assert.equal(calls, 0);
+  assert.equal(credentialCalls, 0);
+  assert.equal(fetchCalls, 0);
 });
 
 test("standalone scoring options enforce numeric bounds without persisted host deadlines", () => {
@@ -275,7 +292,25 @@ test("evidence exactly at the application budget is sent intact", async () => {
   }, async endpoint => {
     const report = await client(endpoint).evaluate(bounded, 1);
     assert.deepEqual(report.flagged, []);
-    await assert.rejects(client(endpoint).evaluate({ ...bounded, userRequest: `${bounded.userRequest}7` }, 2), rejectsCode("evidence"));
+    await assert.rejects(client(endpoint).evaluate({ ...bounded, userRequest: `${bounded.userRequest}7` }, 2), rejectsCode("evidence_current_overflow"));
   });
   assert.equal(countEvidenceTokens(observedState), MAX_EVIDENCE_TOKENS);
+});
+
+test("standalone scoring sends bounded newest history without removing current fields", async () => {
+  const older = { role: "assistant", content: "7".repeat(MAX_EVIDENCE_TOKENS) };
+  const newer = { role: "user", content: "Use the latest output." };
+  const original = { ...evidence, recentHistory: [older, newer] };
+  let observedState = "";
+  await local(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk.toString();
+    observedState = JSON.parse(body).state;
+    assert.deepEqual(JSON.parse(observedState), { ...evidence, recentHistory: [newer] });
+    json(response, payload());
+  }, async endpoint => {
+    await client(endpoint).evaluate(original, 1);
+  });
+  assert.ok(countEvidenceTokens(observedState) <= MAX_EVIDENCE_TOKENS);
+  assert.deepEqual(original.recentHistory, [older, newer]);
 });
