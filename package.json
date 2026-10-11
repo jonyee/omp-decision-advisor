@@ -1,9 +1,9 @@
 {
   "name": "omp-decision-advisor",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
-  "description": "Silent Azure Decision-1 triage with a configurable escalation reviewer and native OMP settings",
+  "description": "Azure Decision-1 triage with a configurable escalation reviewer and native OMP advisor output",
   "license": "UNLICENSED",
   "keywords": ["omp", "omp-extension", "azure", "advisor"],
   "files": ["src/"],
@@ -12,7 +12,7 @@
     "extensions": ["src/index.ts"],
     "settings": {
       "enabled": { "type": "boolean", "default": true, "description": "Enable automatic decision scoring and extension escalation reviews; explicit status smoke tests remain available when off." },
-      "verbose": { "type": "boolean", "default": false, "description": "Show all scoring results, full review JSON and reviewer-request progress; off uses concise advisor-style output." },
+      "verbose": { "type": "boolean", "default": false, "description": "Show all scoring results, full review JSON and reviewer-request progress; completed reviews use native advisor output." },
       "endpoint": { "type": "string", "default": "", "description": "Existing Azure AIServices account HTTPS origin; no credentials, paths, query or fragment." },
       "deployment": { "type": "string", "default": "", "description": "Existing healthy Microsoft-Decision-1 deployment name." },
       "reviewModel": { "type": "string", "default": "@advisor", "description": "Extension reviewer model: OMP advisor role or explicit provider/model selector; not native advisor history." },
