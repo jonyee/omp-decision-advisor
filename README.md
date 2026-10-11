@@ -1,12 +1,12 @@
 # OMP Decision advisor
 
-Microsoft-Decision-1 on Azure Foundry reviews every completed **primary model turn**, including tool-loop turns. Passing turns are silent. A failed triage check automatically starts a configurable **extension escalation reviewer**; only failures and their review are displayed. This is not OMP's native advisor runtime: choosing `@advisor` selects its model role, not its watchdog tools, scheduling or delivery machinery.
+Microsoft-Decision-1 on Azure Foundry reviews every completed **primary model turn**, including tool-loop turns. Passing turns are silent. A failed triage check automatically starts a configurable **extension escalation reviewer**. Completed reviews use OMP's native advisor transcript messages and renderer; the extension owns scoring and investigation, not advisor presentation or scheduling. Choosing `@advisor` selects its model role, not watchdog tools or automatic steering.
 
 The extension and Azure deployment tooling share this repository. No Nix configuration changes are required.
 
 ## Install
 
-Requires OMP **18.8.7**. Its Git installer needs external Bun on `PATH`:
+Requires the **patched OMP 18.8.7 host** from [jonyee/oh-my-pi](https://github.com/jonyee/oh-my-pi), with safe explicit no-trigger delivery and native empty-review status support. Stock 18.8.7 does not honor explicit no-trigger delivery during streaming; do not run this cutover on the stock host. The Git installer needs external Bun on `PATH`:
 
 ```sh
 omp install github:jonyee/omp-decision-advisor
@@ -34,7 +34,7 @@ For an archive, run `npm pack --ignore-scripts` in the checkout, then:
 ```sh
 npm install --ignore-scripts --omit=dev \
   --prefix "$HOME/.local/share/omp-decision-extensions" \
-  /path/to/omp-decision-advisor-0.5.0.tgz
+  /path/to/omp-decision-advisor-0.6.0.tgz
 omp install "$HOME/.local/share/omp-decision-extensions/node_modules/omp-decision-advisor"
 ```
 
@@ -101,18 +101,17 @@ A turn fails triage if **any** criterion has a non-`pass` verdict (`concern`, `b
 
 `0.8` is a conservative starting triage threshold, not a calibrated guarantee. Try `0.7` if representative examples show too many low-confidence false alarms; increasing the threshold is stricter. Explicit non-pass verdicts still escalate regardless of the threshold. Missing evidence is uncertainty, not proof of a defect.
 
-With verbose off, passing scores are retained in ordinary OMP session entries but produce no automatic output. A failure displays its scores and requests the escalation reviewer. An accepted review replaces that turn's panel with just **“The advisor was requested but had no findings.”** Reviews with findings use advisor-style severity badges and note rails, followed by evidence and recommendations—not JSON. An uncertain review without findings says that the advisor could not determine whether a correction is needed. Scoring errors remain **not evaluated**, and reviewer errors never become accepts.
+With verbose off, passing scores are retained in ordinary OMP session entries but produce no automatic output. A failure displays its scores and requests the escalation reviewer. Completed reviews append a native advisor message: accepted reviews show **“The advisor was requested but had no findings.”** Findings use OMP's own severity badges and note rails, with evidence and recommendations—not JSON. An uncertain review without findings uses the native uncertain-status notice. Scoring errors remain **not evaluated**, and reviewer errors never become accepts. Earlier feedback is preserved rather than replaced by a later review.
 
-The escalation reviewer may accept a flagged turn: that means the first-stage flag was not confirmed. Findings are displayed and queued as advisory context for the primary's next natural turn. The extension does not automatically restart the primary, approve an action or change its model. Tools, additional instructions and bounded review summaries are configurable above; native `WATCHDOG.yml` grants, native advisor history, severity-based steering and native advisor recovery are not inherited. OMP itself needs no patch or replacement.
+The escalation reviewer may accept a flagged turn: that means the first-stage flag was not confirmed. Native advisor messages persist findings as advisory context for the primary's next natural request. The extension does not automatically restart the primary, approve an action or change its model. Tools, additional instructions and bounded review summaries are configurable above; native `WATCHDOG.yml` grants, native advisor history, severity-based steering and native advisor recovery are not inherited. The host patch changes message delivery/presentation, not these policies.
 
 An escalation review requires a separate model invocation because it depends on Decision-1's result and uses a different model. Investigation can require further reviewer model calls after tool results. Passing turns have no escalation calls. The current endpoint allowance reported by the owner is **17 requests/second**; count one Decision-1 request per primary turn, not one per criterion. The extension does not alter capacity or quota.
 
-Both scoring and automatic review are bounded below OMP's 30-second hook budget. Separate finalization gates wait for outstanding scoring and reviewer work. Feedback initially appears above the input while idle. Panels longer than six rendered lines collapse to a preview; **Ctrl+O** uses OMP's native expansion state to show/hide all lines, alongside normal tool-output expansion. When the next user-driven primary turn starts, the completed panel is injected into the scrolling transcript through the awaited `before_agent_start` hook, then removed from the input area. It is never queued during the previous shutdown, so presentation does not start an extra primary turn. Display-only feedback is excluded from provider/judge context; actionable findings enter separately.
+Both scoring and automatic review are bounded below OMP's 30-second hook budget. Separate finalization gates wait for outstanding scoring and reviewer work. Feedback is appended directly to the scrolling transcript at a safe host boundary using `pi.sendMessage(..., { triggerTurn: false })`, without a pinned widget or next-user-turn transfer hook. Native advisor cards show the first three notes when collapsed; **Ctrl+O** expands them using OMP's existing handling. Generic score/progress/error feedback is excluded from provider/judge context; native finding messages supply advisory context without a duplicate hidden advice message.
 
 Verbose mode preserves the normal scoring/review output plus complete sanitized report/result JSON and reviewer-request progress. It also prints passing score reports, without requesting a reviewer for them. In ordinary print mode, accepted reviews are a plain note and findings are plain structured notes; full reviewer JSON is shown only when verbose. Protocol JSON mode retains structured records for machine consumers regardless of presentation preference. Provider tokens, raw upstream errors and conversation evidence are not printed by verbose mode. Full validated scores/results remain in OMP custom session entries.
 
-
-Review is post-turn and cannot prevent a tool action that already happened. Evidence includes standing instructions, the latest user request, up to eight recent messages, and the current assistant/tool results. The client now permits **28000 evidence tokens**, up from 24000, using an offline Qwen3.5-9B tokenizer matching the published base model family. This leaves 4768 tokens within Decision-1's 32768-token context for the rubric, answer choices and service framing; the service's internal formatting is not exposed, so this is an application allowance, not a guarantee of maximum-size service acceptance. The extension and standalone client use the same token allowance, not a byte estimate. Oversized evidence is rejected rather than silently truncated. Raising the allowance does not fix reviewer timeouts or evidence duplication. Attachments are explicitly unavailable to this text-only judge.
+Review is post-turn and cannot prevent a tool action that already happened. Evidence includes standing instructions, the latest user request, up to eight recent messages, and the current assistant/tool results. The client permits **28000 evidence tokens**, up from 24000, using an offline Qwen3.5-9B tokenizer matching the published base model family. This leaves 4768 tokens within Decision-1's 32768-token context for the rubric, answer choices and service framing; internal service formatting is not exposed, so near-limit Azure acceptance is not guaranteed. The extension and standalone client use the same token allowance, not a byte estimate. Oversized evidence is rejected rather than silently truncated. Raising the allowance does not fix reviewer timeouts or evidence duplication. Attachments are explicitly unavailable to this text-only judge.
 
 ## Checkout utilities and Azure deployment
 
@@ -155,7 +154,7 @@ Additional native TUI verification covered the four-action control menu, a focus
 
 Expanded-reviewer TUI verification covered declined elevated grants, picker cancellation, explicit elevated confirmation at Save, multiline instructions and history tuning. A user-granted `write` changed only a temporary smoke file; inherited `always-ask` approval prevented that mutation in a headless run. Fresh read results honored configured secret redaction. An unavailable `recall` grant failed before the reviewer model was called, and explicit empty grants exposed no tools.
 
-Presentation verification exercised the actual native TUI advisor-style notes and six-line preview, Ctrl+O expansion without overriding the built-in shortcut, concise accepted-review notes, and transfer into scrolling output at the next user boundary. RPC and print-mode smokes exercised accepted/actionable review formatting and saved verbose controls. Live Azure scoring showed passing reports only in verbose mode; verbose escalation included a request-progress note and full accepted result. Type checking and 117 regression tests passed.
+Native cutover verification exercised the patched fork in an isolated profile with deterministic local chat providers. Two prompts produced exactly two primary calls and two reviewer calls, and two persisted native advisor messages. Actual TUI smokes covered first-three-note collapse, Ctrl+O expansion to the fourth finding, accepted-review notices and findings in the next primary request. Print mode showed the uncertain-review notice and verbose accepted-review JSON. This did not switch the installed host or mutate Azure deployments.
 
 ## Sources
 
