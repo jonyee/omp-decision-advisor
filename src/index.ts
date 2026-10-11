@@ -62,7 +62,7 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     client = undefined;
     configurationError = undefined;
     try {
-      client = new AzureDecisionClient(toDecisionOptions(settings), { evidenceFits: state => countTokens(state, Encoding.Qwen3) <= 24_000 });
+      client = new AzureDecisionClient(toDecisionOptions(settings), { evidenceFits: state => countTokens(state, Encoding.Qwen3) <= 28_000 });
     } catch { configurationError = "Decision scoring is not configured. Run /decision to choose the deployment."; }
   };
   const showFeedback = (text: string, ctx: ExtensionContext, record: object) => {

@@ -21,7 +21,7 @@ interface TokenProvider {
 export interface DecisionDependencies {
   credential?: TokenProvider;
   fetch?: typeof globalThis.fetch;
-  /** Host tokenizer may accept larger text within a conservative 24000-token evidence budget. */
+  /** Host tokenizer may accept larger text within a 28000-token evidence budget. */
   evidenceFits?: (state: string) => boolean;
   /** Only literal loopback HTTP, and only with an injected credential. Never expose as an env setting. */
   allowTestLoopback?: boolean;
