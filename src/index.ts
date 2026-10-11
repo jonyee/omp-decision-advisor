@@ -1,10 +1,13 @@
-import { countTokens, Encoding } from "@oh-my-pi/pi-natives";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { buildSecretObfuscator, type SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
-import { AzureDecisionClient, DecisionError } from "./decision.ts";
+import { AzureDecisionClient, CurrentEvidenceOverflowError, DecisionError, MAX_EVIDENCE_TOKENS, packEvidence } from "./decision.ts";
 import { toDecisionOptions, type DecisionSettings } from "./config.ts";
 import { buildEvidence } from "./evidence.ts";
-import { reviewTurn, ReviewerConfigurationError } from "./review.ts";
+import { countEvidenceTokens } from "./evidence-tokens.ts";
+
+const evidenceBudget = { count: countEvidenceTokens, max: MAX_EVIDENCE_TOKENS, unit: "tokens" as const };
+import { reviewTurn } from "./review.ts";
+import { ReviewerConfigurationError, ReviewerError, waitForReviews, type ReviewerErrorCode } from "./review-lifecycle.ts";
 import { criterionIds, type DecisionReport, type ReviewResult, type TurnEvidence } from "./types.ts";
 import { loadDecisionSettings, saveDecisionSettings } from "./settings.ts";
 import { configureDecision } from "./settings-ui.ts";
@@ -18,6 +21,7 @@ interface ReviewedTurn {
   settings?: DecisionSettings;
   review?: Promise<void>;
   result?: ReviewResult;
+  error?: { category: ReviewerErrorCode; detail: string };
 }
 
 function formatReport(report: DecisionReport, verbose = false): string {
@@ -31,7 +35,7 @@ function formatReport(report: DecisionReport, verbose = false): string {
     "Scores classify supplied evidence; they are not explanations or proof of correctness."].join("\n");
 }
 
-export default function decisionAdvisor(pi: ExtensionAPI) {
+export default function decisionAdvisor(pi: ExtensionAPI, options: { reviewWaitMs?: number } = {}) {
   let controller = new AbortController();
   let obfuscator: SecretObfuscator | undefined;
   let client: AzureDecisionClient | undefined;
@@ -62,7 +66,7 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     client = undefined;
     configurationError = undefined;
     try {
-      client = new AzureDecisionClient(toDecisionOptions(settings), { evidenceFits: state => countTokens(state, Encoding.Qwen3) <= 28_000 });
+      client = new AzureDecisionClient(toDecisionOptions(settings), { evidenceBudget });
     } catch { configurationError = "Decision scoring is not configured. Run /decision to choose the deployment."; }
   };
   const showFeedback = (text: string, ctx: ExtensionContext, record: object) => {
@@ -98,13 +102,12 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     const job = (async () => {
       try {
         const settings = captured.settings;
-        if (!settings) throw new Error("Decision settings are unavailable.");
-        const signal = AbortSignal.any([generation, AbortSignal.timeout(settings.advisorTimeoutMs)]);
+        if (!settings) throw new ReviewerConfigurationError("Decision settings are unavailable. Reload the extension or configure /decision settings.");
         if (settings.verbose) {
           const text = `Advisor requested for turn ${captured.turn}; waiting for findings.`;
           showFeedback(text, ctx, { type: "decision_review_requested", turn: captured.turn, automatic });
         }
-        const result = await reviewTurn(ctx, captured.evidence, captured.report, signal, {
+        const result = await reviewTurn(ctx, captured.evidence, captured.report, generation, {
           model: settings.reviewModel,
           timeoutMs: settings.advisorTimeoutMs,
           tools: settings.reviewTools,
@@ -118,10 +121,12 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
         displayReview(captured, ctx, automatic);
       } catch (error) {
         if (generation.aborted) return;
-        const detail = error instanceof ReviewerConfigurationError ? error.message : "Check the reviewer model, its OMP credentials and review timeout in /decision settings.";
-        const text = `### Escalation review failed — turn ${captured.turn}\nNo reviewer findings were applied. ${detail}`;
-        pi.appendEntry("decision-review-error", { turn: captured.turn, automatic });
-        showFeedback(text, ctx, { type: "decision_review_error", turn: captured.turn, automatic });
+        const failure = error instanceof ReviewerError ? error : new ReviewerError("provider");
+        const detail = failure.message;
+        captured.error = { category: failure.code, detail };
+        const text = `### Escalation review failed — turn ${captured.turn}\nCategory: **${failure.code}**. No reviewer findings were applied. ${detail}`;
+        pi.appendEntry("decision-review-error", { turn: captured.turn, automatic, category: failure.code, detail });
+        showFeedback(text, ctx, { type: "decision_review_error", turn: captured.turn, automatic, category: failure.code, detail });
       }
     })();
     captured.review = job;
@@ -163,7 +168,7 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
     if (ctx.agent.kind === "main") await Promise.allSettled([...finalized, ...scoring]);
   });
   pi.on("session_stop", async (_event, ctx) => {
-    if (ctx.agent.kind === "main") await Promise.allSettled([...reviews]);
+    if (ctx.agent.kind === "main") await waitForReviews(reviews, controller.signal, options.reviewWaitMs);
   });
   pi.on("turn_end", (event, ctx) => {
     if (ctx.agent.kind !== "main" || !configuration?.enabled) return;
@@ -179,10 +184,12 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
       if (currentTurn === turn && !signal.aborted) last = captured;
       let text: string;
       let report: DecisionReport | undefined;
+      let failure: { reason: string; detail?: string } | undefined;
       try {
+        captured.evidence = packEvidence(captured.evidence, evidenceBudget).evidence;
         if (!client) throw new Error(configurationError ?? "Decision client is not configured.");
         const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(20_000)]);
-        report = await client.evaluate(evidence, currentTurn, boundedSignal);
+        report = await client.evaluate(captured.evidence, currentTurn, boundedSignal);
         if (signal.aborted) return;
         captured.report = report;
         if (currentTurn === turn) last = captured;
@@ -196,10 +203,12 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
       } catch (error) {
         if (signal.aborted) return;
         const reason = error instanceof DecisionError ? error.code : "configuration";
-        text = `### Decision feedback — turn ${currentTurn}\nStatus: **not evaluated** (${reason}). No pass was recorded. The escalation reviewer checks this turn without a decision score.`;
-        pi.appendEntry("decision-error", { turn: currentTurn, status: "not_evaluated" });
+        const detail = error instanceof CurrentEvidenceOverflowError ? error.message : undefined;
+        failure = { reason, ...(detail ? { detail } : {}) };
+        text = `### Decision feedback — turn ${currentTurn}\nStatus: **not evaluated** (${reason}). No pass was recorded.${detail ? ` ${detail}` : ""} The escalation reviewer checks this turn without a decision score.`;
+        pi.appendEntry("decision-error", { turn: currentTurn, status: "not_evaluated", ...failure });
       }
-      showFeedback(text, ctx, { type: "decision_feedback", turn: currentTurn, report: report ?? null, status: report ? "evaluated" : "not_evaluated" });
+      showFeedback(text, ctx, { type: "decision_feedback", turn: currentTurn, report: report ?? null, status: report ? "evaluated" : "not_evaluated", ...failure });
       void startReview(captured, ctx, true);
     })();
     scoring.add(job);
@@ -251,11 +260,17 @@ export default function decisionAdvisor(pi: ExtensionAPI) {
       if (action !== "review") { ctx.ui.notify("Use /decision on, off, status, settings or review.", "warning"); return; }
       if (!last) { ctx.ui.notify("No turn evidence captured in this session yet.", "warning"); return; }
       const captured = last;
-      if (captured.review) {
-        await captured.review;
-        if (captured.result) displayReview(captured, ctx, false);
-        else ctx.ui.notify("The escalation review did not complete. Inspect reviewer settings in /decision settings.", "warning");
-      } else await startReview(captured, ctx, false);
+      const generation = controller.signal;
+      const existing = captured.review !== undefined;
+      await waitForReviews([captured.review ?? startReview(captured, ctx, false)], generation, options.reviewWaitMs);
+      if (generation.aborted) return;
+      if (captured.result) {
+        if (existing) displayReview(captured, ctx, false);
+      } else if (captured.error) {
+        ctx.ui.notify(`Review ${captured.error.category}: ${captured.error.detail}`, "warning");
+      } else {
+        ctx.ui.notify("The escalation review is still running. Its findings will appear when it completes; no primary turn will be triggered.", "info");
+      }
     },
   });
 }

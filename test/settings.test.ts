@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { discoverDecisionDeployments } from "../src/azure-models.js";
 import type { AzureRunner } from "../src/azure-cli.js";
-import { MAX_REVIEW_INSTRUCTIONS_BYTES, normalizeDecisionSettings, toDecisionOptions, type DecisionSettings } from "../src/config.js";
+import { MAX_REVIEW_INSTRUCTIONS_BYTES, normalizeDecisionSettings, toDecisionOptions, validateDecisionOptions, type DecisionSettings } from "../src/config.js";
 import { ELEVATED_REVIEW_TOOLS, parseReviewTools } from "../src/review-tools.js";
 
 const configured: DecisionSettings = {
@@ -77,23 +77,26 @@ test("changing triage tuning preserves explicit advisor and Azure identity choic
   assert.equal(toDecisionOptions(role).credentialMode, "azure-cli");
 });
 
-test("stored host deadlines and pass probability have bounded numeric semantics", () => {
+test("scoring deadlines and reviewer execution deadlines have separate persisted bounds", () => {
   for (const passThreshold of [0.5, 1]) {
     assert.equal(toDecisionOptions(normalizeDecisionSettings({ ...configured, passThreshold })).passThreshold, passThreshold);
   }
   for (const passThreshold of [NaN, Infinity, -Infinity, 0.49, 1.01, "0.8", null]) {
     assert.throws(() => normalizeDecisionSettings({ ...configured, passThreshold }));
   }
-  for (const key of ["timeoutMs", "advisorTimeoutMs"] as const) {
-    for (const value of [100, 20_000]) {
+  for (const [key, maximum] of [["timeoutMs", 20_000], ["advisorTimeoutMs", 120_000]] as const) {
+    for (const value of [100, maximum]) {
       const settings = normalizeDecisionSettings({ ...configured, [key]: value });
       assert.equal(settings[key], value);
     }
-    for (const value of [99, 20_001, 100.5, Infinity, NaN, "1000", null]) {
+    for (const value of [99, maximum + 1, 100.5, Infinity, NaN, "1000", null]) {
       assert.throws(() => normalizeDecisionSettings({ ...configured, [key]: value }));
     }
   }
   assert.throws(() => toDecisionOptions({ ...configured, timeoutMs: 20_001 }));
+  assert.equal(normalizeDecisionSettings({}).advisorTimeoutMs, 60_000);
+  assert.equal(toDecisionOptions({ ...configured, advisorTimeoutMs: 120_000 }).timeoutMs, configured.timeoutMs);
+  assert.equal(validateDecisionOptions({ ...toDecisionOptions(configured), timeoutMs: 120_000 }).timeoutMs, 120_000);
 });
 
 test("stored provider endpoints reject credentials and non-origin URLs even before deployment selection", () => {

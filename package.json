@@ -22,12 +22,14 @@
       "credentialMode": { "type": "enum", "values": ["azure-cli", "default"], "default": "azure-cli", "description": "Azure CLI identity (az login) or Azure SDK DefaultAzureCredential; credentials are never stored." },
       "passThreshold": { "type": "number", "default": 0.8, "min": 0.5, "max": 1, "step": 0.01, "description": "Required pass probability; lower means fewer reviews, higher is stricter." },
       "timeoutMs": { "type": "number", "default": 10000, "min": 100, "max": 20000, "step": 1, "description": "Per-turn scoring deadline in milliseconds, including authentication and response reading." },
-      "advisorTimeoutMs": { "type": "number", "default": 20000, "min": 100, "max": 20000, "step": 1, "description": "Automatic extension reviewer deadline in milliseconds." }
+      "advisorTimeoutMs": { "type": "number", "default": 60000, "min": 100, "max": 120000, "step": 1, "description": "Reviewer execution deadline in milliseconds; independent of the 20000 ms host wait. Existing saved choices are preserved." }
     }
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
+    "test": "npm run test:node && npm run test:host",
+    "test:node": "tsx --test test/decision.test.ts test/deploy.test.ts test/review-history.test.ts test/review.test.ts test/settings.test.ts test/smoke.test.ts",
+    "test:host": "bun test test/evidence.test.ts",
     "deploy": "tsx deploy/cli.ts",
     "probe": "tsx scripts/probe.ts",
     "omp": "tsx scripts/omp.ts"

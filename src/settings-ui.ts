@@ -108,7 +108,7 @@ export async function configureDecision(ctx: ExtensionCommandContext): Promise<D
       { label: "Azure credentials", description: draft.credentialMode === "azure-cli" ? "Azure CLI identity (az login)" : "DefaultAzureCredential" },
       { label: "Pass threshold", description: `${draft.passThreshold} · lower means fewer reviews; higher is stricter (0.5–1).` },
       { label: "Scoring timeout", description: `${draft.timeoutMs} ms (100–20000).` },
-      { label: "Automatic reviewer timeout", description: `${draft.advisorTimeoutMs} ms (100–20000).` },
+      { label: "Reviewer execution timeout", description: `${draft.advisorTimeoutMs} ms (100–120000); host waits at most 20000 ms, then review continues.` },
       { label: "Verbose output", description: draft.verbose ? "On: all scoring results, full review JSON and progress notes." : "Off: silent passes, concise review notes without JSON." },
       { label: "Save", description: "Persist preferences in the active OMP profile; Azure credentials are never saved." },
       { label: "Cancel", description: "Discard this draft without changing preferences." },
@@ -139,9 +139,9 @@ export async function configureDecision(ctx: ExtensionCommandContext): Promise<D
           { label: "DefaultAzureCredential", description: "Use Azure SDK credential discovery, such as managed identity or development credentials." },
         ]);
         if (mode !== undefined) draft = { ...draft, credentialMode: mode === "Azure CLI identity" ? "azure-cli" : "default" };
-      } else if (choice === "Pass threshold" || choice === "Scoring timeout" || choice === "Automatic reviewer timeout") {
+      } else if (choice === "Pass threshold" || choice === "Scoring timeout" || choice === "Reviewer execution timeout") {
         const key = choice === "Pass threshold" ? "passThreshold" : choice === "Scoring timeout" ? "timeoutMs" : "advisorTimeoutMs";
-        const title = choice === "Pass threshold" ? "Pass threshold (0.5–1; lower means fewer reviews, higher is stricter)" : `${choice} in milliseconds (100–20000)`;
+        const title = choice === "Pass threshold" ? "Pass threshold (0.5–1; lower means fewer reviews, higher is stricter)" : `${choice} in milliseconds (100–${key === "advisorTimeoutMs" ? "120000" : "20000"})`;
         const value = await ctx.ui.input(title, String(draft[key]));
         if (value !== undefined) {
           if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value.trim())) throw new Error("Enter a decimal number without units.");
