@@ -1,10 +1,11 @@
 import { AzureCliCredential, DefaultAzureCredential } from "@azure/identity";
 import { validateDecisionOptions } from "./config.js";
 import { criterionIds, verdicts, type CriterionId, type CriterionResult, type DecisionOptions, type DecisionReport, type DecisionSmokeResult, type TurnEvidence, type Verdict } from "./types.js";
+import { countEvidenceTokens } from "./evidence-tokens.ts";
 
 export const COGNITIVE_SCOPE = "https://cognitiveservices.azure.com/.default";
-// Conservative application budget, NOT the model's tokenizer/context limit. Reserve space for the rubric.
-export const MAX_EVIDENCE_BYTES = 28_000;
+// Leave 4768 tokens for the rubric, choices and service framing within the 32768-token context.
+export const MAX_EVIDENCE_TOKENS = 28_000;
 const PROBABILITY_SUM_TOLERANCE = 0.01;
 
 export type DecisionErrorCode = "evidence" | "authentication" | "network" | "http" | "response" | "timeout" | "cancelled";
@@ -21,7 +22,7 @@ interface TokenProvider {
 export interface DecisionDependencies {
   credential?: TokenProvider;
   fetch?: typeof globalThis.fetch;
-  /** Host tokenizer may accept larger text within a conservative 24000-token evidence budget. */
+  /** Override evidence fitting for isolated tests or an alternate model tokenizer. */
   evidenceFits?: (state: string) => boolean;
   /** Only literal loopback HTTP, and only with an injected credential. Never expose as an env setting. */
   allowTestLoopback?: boolean;
@@ -128,7 +129,7 @@ export class AzureDecisionClient {
       ? new AzureCliCredential({ processTimeoutInMs: this.options.timeoutMs })
       : new DefaultAzureCredential({ processTimeoutInMs: this.options.timeoutMs }));
     this.fetch = dependencies.fetch ?? globalThis.fetch;
-    this.evidenceFits = dependencies.evidenceFits ?? (state => Buffer.byteLength(state, "utf8") <= MAX_EVIDENCE_BYTES);
+    this.evidenceFits = dependencies.evidenceFits ?? (state => countEvidenceTokens(state) <= MAX_EVIDENCE_TOKENS);
   }
 
   async evaluate(evidence: TurnEvidence, turn: number, signal?: AbortSignal): Promise<DecisionReport> {

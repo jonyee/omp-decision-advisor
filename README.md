@@ -27,7 +27,7 @@ omp install /path/to/omp-decision-advisor
 
 Restart OMP after installation. Uninstall with `omp plugin uninstall omp-decision-advisor`.
 
-The extension archive ships `src/`, `package.json` and this README. Azure Identity is its only external runtime dependency; the host supplies the SDK and tokenizer. Optional peers pin the supported OMP version without installing another OMP runtime. Native TypeScript loading needs no extension build step. `private: true` prevents npm-registry publication; GitHub installation still works. No redistribution license has been selected.
+The extension archive ships `src/`, `package.json` and this README. Runtime dependencies are Azure Identity and the portable `@huggingface/tokenizers` library; the host supplies the agent SDK. The bundled Qwen3.5 tokenizer is loaded locally once, without runtime downloads or an OMP-native dependency. Its Apache-2.0 license is included at `src/qwen35-tokenizer.LICENSE`. Native TypeScript loading needs no extension build step. `private: true` prevents npm-registry publication; GitHub installation still works. No redistribution license has been selected for the extension itself.
 
 For an archive, run `npm pack --ignore-scripts` in the checkout, then:
 
@@ -112,7 +112,7 @@ Both scoring and automatic review are bounded below OMP's 30-second hook budget.
 Verbose mode preserves the normal scoring/review output plus complete sanitized report/result JSON and reviewer-request progress. It also prints passing score reports, without requesting a reviewer for them. In ordinary print mode, accepted reviews are a plain note and findings are plain structured notes; full reviewer JSON is shown only when verbose. Protocol JSON mode retains structured records for machine consumers regardless of presentation preference. Provider tokens, raw upstream errors and conversation evidence are not printed by verbose mode. Full validated scores/results remain in OMP custom session entries.
 
 
-Review is post-turn and cannot prevent a tool action that already happened. Evidence includes standing instructions, the latest user request, up to eight recent messages, and the current assistant/tool results. OMP's Qwen tokenizer limits evidence to 24000 tokens, reserving space within the model's 32768-token context for rubrics. The standalone client uses a stricter 28000-byte budget without a host tokenizer. Oversized evidence is rejected rather than silently truncated. Attachments are explicitly unavailable to this text-only judge.
+Review is post-turn and cannot prevent a tool action that already happened. Evidence includes standing instructions, the latest user request, up to eight recent messages, and the current assistant/tool results. The client now permits **28000 evidence tokens**, up from 24000, using an offline Qwen3.5-9B tokenizer matching the published base model family. This leaves 4768 tokens within Decision-1's 32768-token context for the rubric, answer choices and service framing; the service's internal formatting is not exposed, so this is an application allowance, not a guarantee of maximum-size service acceptance. The extension and standalone client use the same token allowance, not a byte estimate. Oversized evidence is rejected rather than silently truncated. Raising the allowance does not fix reviewer timeouts or evidence duplication. Attachments are explicitly unavailable to this text-only judge.
 
 ## Checkout utilities and Azure deployment
 
